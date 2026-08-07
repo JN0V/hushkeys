@@ -1,0 +1,16 @@
+[Unit]
+Description=Daemon de dictée (faster-whisper, modèle résident)
+After=graphical-session.target
+
+[Service]
+Type=simple
+# Ni version de Python ni chemins CUDA ici : l'enveloppe bin/dictation-daemon
+# les résout via dictation-env.sh. Reconstruire le venv avec une autre version
+# de Python ne demande donc aucune modification de ce fichier.
+ExecStart=%h/Documents/dev/dictation/bin/dictation-daemon
+ExecStop=%h/Documents/dev/dictation/bin/dictation-daemon --stop
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,28 @@
+# Vocabulaire technique passé au décodeur Whisper via `hotwords`.
+#
+# Un terme par ligne. Les lignes vides et celles commençant par # sont ignorées.
+# Le fichier est relu à chaque transcription : une modification prend effet
+# immédiatement, sans redémarrer le daemon.
+#
+# À quoi ça sert : sans biais, Whisper transcrit « IaC » en « Igacé » et
+# « git worktree » en « Gitworktree ». Avec ces termes déclarés, les deux
+# passent correctement, pour un surcoût mesuré de 0,2 s.
+#
+# Copier vers ~/.config/dictation/vocabulary.txt et adapter.
+
+IaC
+GitOps
+Kubernetes
+Ansible
+Terraform
+Helm
+ArgoCD
+CI/CD
+BDD
+git worktree
+rebase
+fetch
+pull request
+merge
+Rust
+React
