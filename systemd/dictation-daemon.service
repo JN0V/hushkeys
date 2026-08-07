@@ -4,11 +4,14 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-# Ni version de Python ni chemins CUDA ici : l'enveloppe bin/dictation-daemon
-# les résout via dictation-env.sh. Reconstruire le venv avec une autre version
-# de Python ne demande donc aucune modification de ce fichier.
-ExecStart=%h/Documents/dev/dictation/bin/dictation-daemon
-ExecStop=%h/Documents/dev/dictation/bin/dictation-daemon --stop
+# Le chemin du dépôt n'apparaît pas ici : install.sh pose un lien symbolique
+# ~/bin/dictation-daemon, et l'enveloppe remonte au dépôt par readlink. Le unit
+# reste donc valable quel que soit l'endroit où le dépôt est cloné, et peut être
+# lié tel quel — un git pull met l'installation à jour sans réinstaller.
+#
+# Ni version de Python ni chemins CUDA non plus : dictation-env.sh les résout.
+ExecStart=%h/bin/dictation-daemon
+ExecStop=%h/bin/dictation-daemon --stop
 Restart=on-failure
 RestartSec=5
 

@@ -75,6 +75,10 @@ step "4/5 — Liens symboliques"
 mkdir -p "$HOME/bin" "$SYSTEMD_USER"
 ln -sfn "$REPO/bin/dictee" "$HOME/bin/dictee"
 green "~/bin/dictee"
+# Le service pointe sur ~/bin/dictation-daemon plutôt que sur le dépôt : c'est ce
+# qui rend le unit indépendant de l'endroit où le dépôt est cloné.
+ln -sfn "$REPO/bin/dictation-daemon" "$HOME/bin/dictation-daemon"
+green "~/bin/dictation-daemon"
 ln -sfn "$REPO/systemd/dictation-daemon.service" "$SYSTEMD_USER/dictation-daemon.service"
 green "~/.config/systemd/user/dictation-daemon.service"
 
@@ -82,10 +86,27 @@ green "~/.config/systemd/user/dictation-daemon.service"
 step "5/5 — Services"
 
 systemctl --user daemon-reload
-systemctl --user enable --now ydotool.service >/dev/null 2>&1 && green "ydotool.service actif" \
-    || warn "ydotool.service n'a pas démarré — es-tu dans le groupe 'input' ? (déconnexion requise)"
-systemctl --user enable --now dictation-daemon.service >/dev/null 2>&1 && green "dictation-daemon.service actif" \
-    || warn "dictation-daemon.service n'a pas démarré — voir : journalctl --user -u dictation-daemon"
+
+# `enable --now` renvoie 0 dès que l'activation réussit, même si le démarrage
+# échoue derrière. Pire, ydotool.service est en Restart=always : il apparaît
+# brièvement « active » avant de mourir. On laisse donc l'état se stabiliser
+# avant de conclure, sinon on affiche un faux succès.
+enable_and_check() {
+    local unit="$1" hint="$2"
+    systemctl --user reset-failed "$unit" >/dev/null 2>&1 || true
+    systemctl --user enable --now "$unit" >/dev/null 2>&1 || true
+    sleep 3
+    if [ "$(systemctl --user is-active "$unit" 2>/dev/null)" = "active" ]; then
+        green "$unit actif"
+    else
+        warn "$unit n'est pas actif — $hint"
+    fi
+}
+
+enable_and_check ydotool.service \
+    "es-tu dans le groupe 'input' ? l'appartenance ne prend effet qu'après reconnexion"
+enable_and_check dictation-daemon.service \
+    "voir : journalctl --user -u dictation-daemon"
 
 cat <<'EOF'
 

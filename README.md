@@ -169,3 +169,26 @@ journalctl --user -u dictation-daemon -f
 Le correctif `nvidia-uvm-reload.service` recharge `nvidia_uvm` après une mise en
 veille : sans lui, CUDA devient inutilisable au réveil sur portable, et le
 daemon retombe silencieusement sur le CPU.
+
+Le dépôt peut être cloné n'importe où : le service systemd pointe sur
+`~/bin/dictation-daemon`, et l'enveloppe remonte au dépôt par `readlink`. Tout
+est installé par liens symboliques, donc un `git pull` suffit à mettre à jour —
+il n'y a pas à réinstaller.
+
+---
+
+## Licence
+
+MIT — voir [LICENSE](LICENSE).
+
+Le code ne dérive d'aucun projet existant. En particulier, il ne reprend rien de
+[nerd-dictation][nd] (GPL-3.0), qui traite le même besoin par une architecture
+entièrement différente : Python, VOSK en flux continu, script unique.
+
+`ydotool` est sous AGPL-3.0, mais il est invoqué comme processus séparé, sans
+liaison ni intégration de code — une invocation en ligne de commande reste à
+distance de bras et n'étend pas sa licence à l'appelant. Même chose pour
+`parecord`, `socat` et `notify-send`. Les dépendances Python — faster-whisper et
+CTranslate2 — sont en MIT.
+
+[nd]: https://github.com/ideasman42/nerd-dictation
