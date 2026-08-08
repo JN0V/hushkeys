@@ -88,10 +88,18 @@ secondaire appréciable : l'insertion est instantanée, là où la frappe caract
 par caractère demandait plusieurs secondes sur un paragraphe.
 
 La combinaison est paramétrable (`DICTATION_PASTE_KEYS`) parce qu'elle dépend de
-l'application visée : les terminaux collent avec `Ctrl+Shift+V`. On ne peut pas
-choisir automatiquement — GNOME refuse `org.gnome.Shell.Introspect.GetWindows`
-aux appelants non autorisés, il n'y a donc aucun moyen de savoir quelle fenêtre a
-le focus.
+l'application visée. On ne peut pas choisir automatiquement — GNOME refuse
+`org.gnome.Shell.Introspect.GetWindows` aux appelants non autorisés, il n'y a
+donc aucun moyen de savoir quelle fenêtre a le focus.
+
+En pratique `Ctrl+V` suffit presque partout, y compris à une invite shell :
+Ptyxis ne lie certes le collage qu'à `Ctrl+Shift+V`
+(`org.gnome.Ptyxis.Shortcuts paste-clipboard`), mais **fish lie `Ctrl+V` à
+`fish_clipboard_paste`** dans ses préréglages
+(`__fish_shared_key_bindings.fish`), donc le collage aboutit quand même. Le
+second raccourci en `Ctrl+Shift+V` reste utile pour les programmes plein écran
+qui captent `Ctrl+V` à leur profit — `vim` en mode insertion, typiquement — et
+pour les shells qui, eux, traitent `Ctrl+V` comme `quoted-insert` (bash/readline).
 
 Le presse-papiers est restauré après collage, mais uniquement s'il contenait du
 texte : un contenu non textuel présent avant la dictée est perdu.
