@@ -17,15 +17,15 @@ step()  { printf '\n\033[1m%s\033[0m\n' "$1"; }
 step "1/5 — Dépendances système"
 
 MISSING=()
-for cmd in parecord socat notify-send ydotool ydotoold; do
+for cmd in parecord socat notify-send ydotool ydotoold wl-copy wl-paste; do
     command -v "$cmd" >/dev/null 2>&1 || MISSING+=("$cmd")
 done
 if [ ${#MISSING[@]} -gt 0 ]; then
     warn "Manquant : ${MISSING[*]}"
-    echo "    sudo apt install -y pulseaudio-utils socat libnotify-bin ydotool"
+    echo "    sudo apt install -y pulseaudio-utils socat libnotify-bin ydotool wl-clipboard"
     exit 1
 fi
-green "parecord, socat, notify-send, ydotool présents"
+green "parecord, socat, notify-send, ydotool, wl-clipboard présents"
 
 if ! command -v uv >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/uv" ]; then
     warn "uv absent — nécessaire pour installer un CPython dédié."

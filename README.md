@@ -18,13 +18,20 @@ en 6 s, sans rechargement.
 ## Installation
 
 ```bash
-sudo apt install -y pulseaudio-utils socat libnotify-bin ydotool
-sudo usermod -aG input $USER     # accès à /dev/uinput — déconnexion requise
+sudo apt install -y pulseaudio-utils socat libnotify-bin ydotool wl-clipboard
+sudo usermod -aG input $USER     # accès à /dev/uinput — redémarrage requis
 ./install.sh
 ```
 
 Puis un raccourci clavier GNOME (*Settings > Keyboard > Custom Shortcuts*) sur
 `~/bin/dictee toggle`.
+
+Pour dicter dans un terminal, ajouter un second raccourci — les terminaux collent
+avec `Ctrl+Shift+V` :
+
+```
+env DICTATION_PASTE_KEYS=ctrl+shift+v /home/<user>/bin/dictee toggle
+```
 
 Configuration personnelle dans `~/.config/dictation/vocabulary.txt` — hors dépôt.
 
@@ -61,8 +68,37 @@ Conséquences pratiques :
   Pour le vérifier : `loginctl list-sessions` montre une entrée `manager` dont le
   leader est le `systemd --user`, avec sa date de démarrage d'origine.
 
-Si `ydotoold` ne tourne pas, `dictee` bascule sur le presse-papiers plutôt que
-de perdre la transcription.
+Si `ydotoold` ne tourne pas, `dictee` laisse le texte dans le presse-papiers
+plutôt que de perdre la transcription.
+
+### Le texte est collé, pas frappé
+
+`ydotool type` est inutilisable sur un clavier non-US. Il émet des codes touches
+bruts et suppose une disposition américaine — son propre `--help` l'assume :
+
+> Since there's no way to know how many keyboard layouts are there in the world,
+> we're using raw keycodes now.
+
+Sur AZERTY, `KEY_A` produit un `q` : la dictée sort en charabia.
+
+Le texte transite donc par le presse-papiers, et seul un raccourci de collage est
+émis. `Ctrl`, `Shift` et `V` occupent la même position physique en AZERTY et en
+QWERTY, leurs codes bruts sont donc corrects quelle que soit la disposition. Effet
+secondaire appréciable : l'insertion est instantanée, là où la frappe caractère
+par caractère demandait plusieurs secondes sur un paragraphe.
+
+La combinaison est paramétrable (`DICTATION_PASTE_KEYS`) parce qu'elle dépend de
+l'application visée : les terminaux collent avec `Ctrl+Shift+V`. On ne peut pas
+choisir automatiquement — GNOME refuse `org.gnome.Shell.Introspect.GetWindows`
+aux appelants non autorisés, il n'y a donc aucun moyen de savoir quelle fenêtre a
+le focus.
+
+Le presse-papiers est restauré après collage, mais uniquement s'il contenait du
+texte : un contenu non textuel présent avant la dictée est perdu.
+
+Les alternatives ont été écartées : `wtype` ne fonctionne pas sous GNOME (même
+protocole wlroots absent), et `dotool`, qui gère les dispositions, n'est pas
+packagé dans Ubuntu.
 
 ### Un CPython 3.12 dédié, pas le Python système
 
