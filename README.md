@@ -50,7 +50,16 @@ Conséquences pratiques :
   `GROUP="input", MODE="0660"` sur `/dev/uinput` — rien à écrire soi-même.
 - Le paquet fournit un service **utilisateur** `ydotool.service` qui lance
   `ydotoold`. Pas besoin de daemon root.
-- L'appartenance au groupe ne prend effet **qu'après reconnexion**.
+- L'appartenance au groupe demande un **redémarrage**, et non une simple
+  reconnexion. `systemd --user` survit à la fermeture de session tant qu'un
+  processus utilisateur subsiste, or ses groupes supplémentaires sont figés à son
+  propre démarrage : tout service `--user` qu'il relance ensuite — dont
+  `ydotoold` — hérite de l'ancien jeu de groupes. Se déconnecter et se
+  reconnecter ne change rien. Ubuntu 26.04 ne fournissant ni `sg` ni `newgrp`, il
+  n'existe pas non plus de rattrapage à chaud.
+
+  Pour le vérifier : `loginctl list-sessions` montre une entrée `manager` dont le
+  leader est le `systemd --user`, avec sa date de démarrage d'origine.
 
 Si `ydotoold` ne tourne pas, `dictee` bascule sur le presse-papiers plutôt que
 de perdre la transcription.
