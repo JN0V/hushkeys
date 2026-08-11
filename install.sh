@@ -108,7 +108,10 @@ enable_and_check ydotool.service \
 enable_and_check dictation-daemon.service \
     "voir : journalctl --user -u dictation-daemon"
 
-cat <<'EOF'
+# Les chemins sont développés depuis $REPO plutôt qu'écrits en dur : le lien
+# root du correctif CUDA est le seul que ce script ne pose pas lui-même, donc
+# la seule chose qui casse quand le dépôt est déplacé.
+cat <<EOF
 
 Reste à faire à la main :
 
@@ -116,11 +119,11 @@ Reste à faire à la main :
        sudo usermod -aG input $USER      puis se déconnecter/reconnecter
 
   2. Correctif CUDA après veille (portable uniquement) :
-       sudo ln -sf ~/Documents/dev/dictation/systemd/nvidia-uvm-reload.service \
+       sudo ln -sf $REPO/systemd/nvidia-uvm-reload.service \\
             /etc/systemd/system/nvidia-uvm-reload.service
        sudo systemctl daemon-reload && sudo systemctl enable nvidia-uvm-reload.service
 
   3. Raccourci clavier — Settings > Keyboard > Custom Shortcuts :
-       Commande :  /home/<user>/bin/dictee toggle
+       Commande :  $HOME/bin/dictee toggle
 
 EOF
