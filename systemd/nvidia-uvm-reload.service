@@ -1,5 +1,5 @@
 [Unit]
-Description=Recharge nvidia_uvm après veille pour rétablir CUDA
+Description=Reload nvidia_uvm after suspend to restore CUDA
 After=nvidia-resume.service
 Before=graphical-session.target
 

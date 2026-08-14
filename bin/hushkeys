@@ -1,0 +1,151 @@
+#!/bin/bash
+# Offline French dictation — faster-whisper on an NVIDIA GPU.
+#
+#   hushkeys start   begin recording
+#   hushkeys stop    stop, transcribe, paste the text into the focused window
+#
+# The daemon keeps the model resident: see `hushkeys daemon`.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=hushkeys-env.sh
+source "$SCRIPT_DIR/hushkeys-env.sh"
+
+DAEMON_PY="$SCRIPT_DIR/hushkeys-daemon.py"
+TRANSCRIBE="$SCRIPT_DIR/transcribe.py"
+
+notify() { notify-send -i "${2:-audio-input-microphone}" "hushkeys" "$1" 2>/dev/null; }
+
+daemon_transcribe() {
+    local wav_path="$1"
+    if [ -S "$SOCKET" ]; then
+        echo "$wav_path" | socat -t120 - UNIX-CONNECT:"$SOCKET" 2>/dev/null
+    else
+        # No daemon: the model is loaded on every call, which is far slower.
+        "$VENV/bin/python" "$TRANSCRIBE" "$wav_path" 2>/dev/null
+    fi
+}
+
+# Insert the text into the focused window, through the clipboard.
+#
+# ydotool and not xdotool: under Wayland, Mutter does not implement
+# zwp_virtual_keyboard_v1 (a wlroots protocol), so no tool that goes through the
+# compositor works. ydotool writes to /dev/uinput, at kernel level, and comes
+# back through libinput like a real keyboard.
+#
+# But `ydotool type` is unusable: it emits raw keycodes assuming a US layout,
+# as its own --help concedes — "there's no way to know how many keyboard layouts
+# are there in the world, we're using raw keycodes now". On AZERTY, typing comes
+# out as gibberish.
+#
+# Hence pasting: the text goes through the clipboard and only a shortcut is
+# emitted. Ctrl, Shift and V sit at the same physical position on AZERTY and
+# QWERTY, so their raw keycodes are correct on either layout. Welcome side
+# effect: insertion is instant, where typing character by character took several
+# seconds on a paragraph.
+#
+# The combination is configurable because it depends on the target application:
+# terminals (Ptyxis, GNOME Terminal…) paste with Ctrl+Shift+V. Detecting the
+# focused window is not possible — GNOME denies
+# org.gnome.Shell.Introspect.GetWindows to unauthorised callers.
+PASTE_KEYS="${HUSHKEYS_PASTE_KEYS:-ctrl+v}"
+
+paste_keycodes() {
+    # 29 = LEFTCTRL, 42 = LEFTSHIFT, 47 = V  (linux/input-event-codes.h)
+    case "$1" in
+        ctrl+shift+v) echo "29:1 42:1 47:1 47:0 42:0 29:0" ;;
+        ctrl+v)       echo "29:1 47:1 47:0 29:0" ;;
+        *)
+            echo "Unknown combination: $1 (expected ctrl+v or ctrl+shift+v)" >&2
+            echo "29:1 47:1 47:0 29:0"
+            ;;
+    esac
+}
+
+type_text() {
+    local text="$1" previous=""
+
+    if ! command -v wl-copy >/dev/null 2>&1; then
+        notify "wl-clipboard is not installed" dialog-warning
+        return 1
+    fi
+
+    if ! pgrep -x ydotoold >/dev/null 2>&1; then
+        printf '%s' "$text" | wl-copy
+        notify "ydotoold is not running — text left in the clipboard" dialog-warning
+        return 1
+    fi
+
+    previous=$(wl-paste --no-newline 2>/dev/null || true)
+    printf '%s' "$text" | wl-copy
+    ydotool key $(paste_keycodes "$PASTE_KEYS")
+
+    # Let the application consume the clipboard before restoring it. Only text
+    # is restored: non-text content (an image…) present before the dictation
+    # is lost.
+    sleep 0.3
+    if [ -n "$previous" ]; then
+        printf '%s' "$previous" | wl-copy
+    fi
+    return 0
+}
+
+case "${1:-start}" in
+    start)
+        if [ -f "$PIDFILE" ]; then
+            echo "Already recording (PID $(cat "$PIDFILE"))" >&2
+            exit 1
+        fi
+        rm -f "$WAVFILE"
+        notify "Listening..."
+        parecord --channels=1 --rate=16000 --format=s16le --file-format=wav "$WAVFILE" &
+        echo $! > "$PIDFILE"
+        ;;
+
+    stop)
+        if [ ! -f "$PIDFILE" ]; then
+            echo "Not recording." >&2
+            exit 1
+        fi
+        kill "$(cat "$PIDFILE")" 2>/dev/null
+        rm -f "$PIDFILE"
+        sleep 0.1   # let parecord flush its buffer
+        notify "Transcribing..."
+
+        TEXT=$(daemon_transcribe "$WAVFILE")
+        if [ -n "$TEXT" ]; then
+            type_text "$TEXT" && notify "Done"
+        else
+            notify "Nothing heard" dialog-warning
+        fi
+        rm -f "$WAVFILE"
+        ;;
+
+    toggle)
+        # One keyboard shortcut rather than two.
+        if [ -f "$PIDFILE" ]; then exec "$0" stop; else exec "$0" start; fi
+        ;;
+
+    daemon)        "$VENV/bin/python" "$DAEMON_PY" ;;
+    daemon-stop)   "$VENV/bin/python" "$DAEMON_PY" --stop ;;
+    daemon-status) "$VENV/bin/python" "$DAEMON_PY" --status ;;
+
+    *)
+        cat <<EOF
+Usage: hushkeys <command>
+
+  start           begin recording
+  stop            stop, transcribe and paste the text
+  toggle          switch between start and stop (handy on a single shortcut)
+
+  daemon          run the daemon in the foreground
+  daemon-stop     stop the daemon
+  daemon-status   report whether the daemon is running
+
+Model      : $HUSHKEYS_MODEL   (override: HUSHKEYS_MODEL=small hushkeys ...)
+Vocabulary : $VOCAB_FILE
+Paste keys : $PASTE_KEYS   (HUSHKEYS_PASTE_KEYS=ctrl+shift+v for a terminal)
+EOF
+        ;;
+esac

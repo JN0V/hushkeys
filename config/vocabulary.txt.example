@@ -1,14 +1,14 @@
-# Vocabulaire technique passé au décodeur Whisper via `hotwords`.
+# Technical vocabulary handed to the Whisper decoder through `hotwords`.
 #
-# Un terme par ligne. Les lignes vides et celles commençant par # sont ignorées.
-# Le fichier est relu à chaque transcription : une modification prend effet
-# immédiatement, sans redémarrer le daemon.
+# One term per line. Blank lines and lines starting with # are ignored.
+# The file is re-read on every transcription: an edit takes effect immediately,
+# without restarting the daemon.
 #
-# À quoi ça sert : sans biais, Whisper transcrit « IaC » en « Igacé » et
-# « git worktree » en « Gitworktree ». Avec ces termes déclarés, les deux
-# passent correctement, pour un surcoût mesuré de 0,2 s.
+# Why it matters: unbiased, Whisper transcribes "IaC" as "Igacé" and
+# "git worktree" as "Gitworktree" in French speech. With these terms declared,
+# both come out right, for a measured cost of 0.2 s.
 #
-# Copier vers ~/.config/dictation/vocabulary.txt et adapter.
+# Copy to ~/.config/hushkeys/vocabulary.txt and adapt.
 
 IaC
 GitOps

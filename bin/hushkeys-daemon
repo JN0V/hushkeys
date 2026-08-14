@@ -1,0 +1,13 @@
+#!/bin/bash
+# Daemon wrapper: prepares the CUDA environment, then hands over to Python.
+#
+# It exists so that hushkeys-daemon.service hardcodes neither the Python version
+# nor the CUDA library paths — hushkeys-env.sh resolves those, and it alone.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=hushkeys-env.sh
+source "$SCRIPT_DIR/hushkeys-env.sh"
+
+exec "$VENV/bin/python" "$SCRIPT_DIR/hushkeys-daemon.py" "$@"

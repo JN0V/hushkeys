@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Transcription d'un WAV, sans daemon.
+"""Transcribe one WAV file, without the daemon.
 
-Chemin de repli : recharge le modèle à chaque appel (plusieurs secondes).
-Le chemin normal passe par dictation-daemon.py, qui le garde résident.
+Fallback path: reloads the model on every call (several seconds). The normal
+path goes through hushkeys-daemon.py, which keeps it resident.
 
-Usage: transcribe.py <fichier.wav>
+Usage: transcribe.py <file.wav>
 """
 import importlib.util
 import os
@@ -12,7 +12,7 @@ import sys
 
 WAV_FILE = sys.argv[1] if len(sys.argv) > 1 else None
 if not WAV_FILE or not os.path.exists(WAV_FILE):
-    print(f"Usage: {sys.argv[0]} <fichier.wav>", file=sys.stderr)
+    print(f"Usage: {sys.argv[0]} <file.wav>", file=sys.stderr)
     sys.exit(1)
 
 if os.path.getsize(WAV_FILE) < 1000:
@@ -20,11 +20,11 @@ if os.path.getsize(WAV_FILE) < 1000:
 
 
 def _load_daemon_module():
-    """Charge dictation-daemon.py pour réutiliser sa sélection de device et son
-    vocabulaire. Chargement manuel car le nom du fichier porte un tiret et n'est
-    donc pas importable par `import`."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dictation-daemon.py")
-    spec = importlib.util.spec_from_file_location("dictation_daemon", path)
+    """Load hushkeys-daemon.py to reuse its device selection and vocabulary.
+    Loaded by hand because the file name contains a dash and is therefore not
+    importable with `import`."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hushkeys-daemon.py")
+    spec = importlib.util.spec_from_file_location("hushkeys_daemon", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -34,7 +34,7 @@ daemon = _load_daemon_module()
 
 from faster_whisper import WhisperModel  # noqa: E402
 
-MODEL_ID = os.environ.get("DICTATION_MODEL", "medium")
+MODEL_ID = os.environ.get("HUSHKEYS_MODEL", "medium")
 device, compute = daemon.pick_compute_type()
 
 try:
