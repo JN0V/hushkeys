@@ -20,7 +20,8 @@ if os.path.getsize(WAV_FILE) < 1000:
 
 
 def _load_daemon_module():
-    """Load hushkeys-daemon.py to reuse its device selection and vocabulary.
+    """Load hushkeys-daemon.py to reuse its device selection, vocabulary and
+    decoding options — those must not drift between the two paths.
     Loaded by hand because the file name contains a dash and is therefore not
     importable with `import`."""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hushkeys-daemon.py")
@@ -43,12 +44,7 @@ except Exception:
     model = WhisperModel(MODEL_ID, device="cpu", compute_type="int8")
 
 segments, _info = model.transcribe(
-    WAV_FILE,
-    language="fr",
-    beam_size=5,
-    vad_filter=True,
-    vad_parameters=dict(min_silence_duration_ms=500),
-    hotwords=daemon.load_vocabulary(),
+    WAV_FILE, hotwords=daemon.load_vocabulary(), **daemon.transcribe_options()
 )
 
 text = " ".join(seg.text.strip() for seg in segments)

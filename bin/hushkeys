@@ -17,14 +17,33 @@ TRANSCRIBE="$SCRIPT_DIR/transcribe.py"
 
 notify() { notify-send -i "${2:-audio-input-microphone}" "hushkeys" "$1" 2>/dev/null; }
 
+# Answers whose first byte is \x01 report a failure rather than a transcription
+# (see hushkeys-daemon.py). \x01 cannot occur in dictated text.
+ERROR_PREFIX=$'\x01ERROR '
+
 daemon_transcribe() {
-    local wav_path="$1"
+    local wav_path="$1" err status
+    err=$(mktemp)
+
     if [ -S "$SOCKET" ]; then
-        echo "$wav_path" | socat -t120 - UNIX-CONNECT:"$SOCKET" 2>/dev/null
+        # -t is how long socat waits for the answer once it has sent the path.
+        # Transcription runs at roughly a third of real time on a small GPU, so
+        # 120s used to cut off any dictation past ~6 minutes — and a cut-off
+        # answer is empty, which the caller could only read as "nothing heard".
+        # 900s keeps the cap well beyond any plausible dictation.
+        echo "$wav_path" | socat -t900 - UNIX-CONNECT:"$SOCKET" 2>"$err"
     else
         # No daemon: the model is loaded on every call, which is far slower.
-        "$VENV/bin/python" "$TRANSCRIBE" "$wav_path" 2>/dev/null
+        "$VENV/bin/python" "$TRANSCRIBE" "$wav_path" 2>"$err"
     fi
+    status=$?
+
+    # A failure must not reach the caller as an empty answer, which would be
+    # indistinguishable from silence.
+    if [ "$status" -ne 0 ]; then
+        printf '%s%s' "$ERROR_PREFIX" "$(tail -1 "$err")"
+    fi
+    rm -f "$err"
 }
 
 # Insert the text into the focused window, through the clipboard.
@@ -114,12 +133,26 @@ case "${1:-start}" in
         notify "Transcribing..."
 
         TEXT=$(daemon_transcribe "$WAVFILE")
-        if [ -n "$TEXT" ]; then
-            type_text "$TEXT" && notify "Done"
-        else
-            notify "Nothing heard" dialog-warning
-        fi
-        rm -f "$WAVFILE"
+        case "$TEXT" in
+            "$ERROR_PREFIX"*)
+                # Transcription failed. Saying "nothing heard" here would send
+                # the user looking at their microphone; the recording is kept so
+                # the failure can be reproduced.
+                REASON="${TEXT#"$ERROR_PREFIX"}"
+                mv -f "$WAVFILE" "$FAILED_WAV"
+                echo "Transcription failed: $REASON" >&2
+                echo "Recording kept: $FAILED_WAV" >&2
+                notify "Transcription failed — see journalctl --user -u hushkeys-daemon" dialog-error
+                ;;
+            "")
+                notify "Nothing heard" dialog-warning
+                rm -f "$WAVFILE"
+                ;;
+            *)
+                type_text "$TEXT" && notify "Done"
+                rm -f "$WAVFILE"
+                ;;
+        esac
         ;;
 
     toggle)

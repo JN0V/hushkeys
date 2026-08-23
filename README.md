@@ -159,7 +159,7 @@ in `int8` on an MX230 and in `float16` on an RTX 2070, unmodified.
 ### medium by default, not large-v3
 
 Measured on this machine — i7-10510U (4 c / 15 W) + MX230 2 GB — over 20.0 s of
-real French speech, `beam_size=5`, VAD on:
+real French speech, VAD on:
 
 | Configuration | Load | Transcription | VRAM |
 |---|---|---|---|
@@ -168,14 +168,68 @@ real French speech, `beam_size=5`, VAD on:
 | small / GPU / int8 | 2.7 s | 2.6 s | 362 MiB |
 | medium / GPU / float16 | — | unsupported (CC 6.1) | — |
 
-`medium` in int8 fits in **970 MiB**, less than half of the 2 GB — the
-">= 4 GB of VRAM" advice you read everywhere is very pessimistic for this model.
+`medium` in int8 fits in **970 MiB**, less than half of the 2 GB.
 `large-v3` weighs about 1.6 GB and would leave no headroom: it stays reserved for
 better-equipped machines, through `HUSHKEYS_MODEL=large-v3`.
 
 The 12.7 → 18.1 s spread between two identical CPU runs is thermal throttling on
 the 15 W part. Any CPU measurement on this chassis should be read as a range,
 never as a point.
+
+That 970 MiB is the resident model, not the peak. What the ">= 4 GB of VRAM"
+advice is really about is the decoding headroom on top of it — see below.
+
+### Decoding is tuned for VRAM, not for the last percent of accuracy
+
+Whisper decodes 30-second windows. With `condition_on_previous_text` (the
+faster-whisper default), each window is prompted with the previous ~220 tokens,
+and the cross-attention of those tokens against the 1500 encoder frames, times
+the beam width, is allocated on the GPU. It is that product — not the length of
+the recording as such — that grows: the first window is prompted with 3 tokens,
+the second with ~100, the third with ~220, and on a 2 GB card the third one is
+where the allocation fails.
+
+Measured on the MX230, medium/int8, real French speech, peak VRAM over the whole
+transcription:
+
+| Configuration | 2 min | 10 min | 1 h |
+|---|---|---|---|
+| `beam_size=5`, conditioning on | 1964 MiB → **OOM** | — | — |
+| `beam_size=5`, conditioning off | 1484 MiB | 1548 MiB → **OOM** | — |
+| `beam_size=1`, conditioning off | 1292 MiB | 1292 MiB | 1292 MiB |
+| **`beam_size=2`, conditioning off** | — | **1324 MiB** | **1356 MiB** |
+
+Once the conditioning is dropped, the peak stops depending on the length of the
+dictation at all: an hour of speech costs the same VRAM as two minutes. That is
+the property worth having on a small card — the alternative is a dictation
+length beyond which everything fails, which is exactly the bug this replaced.
+
+The accuracy cost is small on dictation, where each 30-second window is largely
+self-contained; dropping the conditioning also removes the repetition loops it
+can trigger. Over 60 s of read French, `beam_size=2` without conditioning agrees
+with the old `beam_size=5` + conditioning on **98.6 %** of words, the only
+difference being a sentence break. `beam_size=1` saves a further 32 MiB but
+starts dropping proper nouns at window boundaries — it transcribed "Roosevelt"
+as "Bruce Wells" — which is exactly the context the conditioning used to supply.
+Two beams buy that back cheaply.
+
+Transcription runs at roughly **0.3 × real time**, so a 3-minute dictation takes
+about a minute.
+
+### A failure is never reported as silence
+
+A CUDA out-of-memory used to be caught, logged, and answered with an empty
+string — which the client could only show as "Nothing heard", pointing the user
+at their microphone instead of at the GPU. Worse, the CUDA context does not
+survive it: every later transcription then failed with
+`cudaErrorInvalidDevice: invalid device ordinal`, so the *next* dictation was
+silently lost too.
+
+So: the daemon answers a failure with a marked line (a leading `\x01`, which
+cannot occur in dictated text) and the client reports it as a failure, keeping
+the recording in `/tmp/hushkeys-failed.wav`. And because a lost CUDA context is
+not recoverable in-process, the daemon exits non-zero on a CUDA error and lets
+`Restart=on-failure` reload the model.
 
 ### Technical vocabulary goes through `hotwords`
 
@@ -239,6 +293,20 @@ systemctl --user status hushkeys-daemon
 journalctl --user -u hushkeys-daemon -f
 ```
 
+When a dictation fails, the notification says so instead of claiming nothing was
+heard, and the recording is kept — so the failure can be replayed instead of
+re-dictated:
+
+```bash
+journalctl --user -u hushkeys-daemon -n 20
+echo /tmp/hushkeys-failed.wav | socat -t900 - UNIX-CONNECT:/tmp/hushkeys-daemon.sock
+```
+
+A CUDA error makes the daemon exit on purpose: the context is lost and no later
+transcription would succeed, so `Restart=on-failure` reloads the model. A
+restart therefore looks like a failure in `systemctl status` — that is the fix
+working, not the bug.
+
 The `nvidia-uvm-reload.service` fix reloads `nvidia_uvm` after a suspend:
 without it, CUDA becomes unusable on wake on a laptop, and the daemon silently
 falls back to the CPU.
@@ -246,7 +314,9 @@ falls back to the CPU.
 The repository can be cloned anywhere: the systemd unit points at
 `~/bin/hushkeys-daemon`, and the wrapper walks back to the repository through
 `readlink`. Everything is installed as symlinks, so a `git pull` is enough to
-update — there is no need to reinstall.
+update — there is no need to reinstall. The daemon holds its code in memory
+though, so a pull that touches it takes effect on
+`systemctl --user restart hushkeys-daemon`.
 
 ## Coming from `dictation`
 

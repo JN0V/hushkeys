@@ -9,6 +9,8 @@ VOCAB_FILE="$CONFIG_DIR/vocabulary.txt"
 SOCKET="/tmp/hushkeys-daemon.sock"
 PIDFILE="/tmp/hushkeys.pid"
 WAVFILE="/tmp/hushkeys-recording.wav"
+# Kept when transcription fails, so the failure can be replayed.
+FAILED_WAV="/tmp/hushkeys-failed.wav"
 
 # Default model: medium.
 # large-v3 weighs ~1.6 GB in int8 and leaves no headroom on a 2 GB GPU.
