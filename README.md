@@ -204,6 +204,9 @@ dictation at all: an hour of speech costs the same VRAM as two minutes. That is
 the property worth having on a small card — the alternative is a dictation
 length beyond which everything fails, which is exactly the bug this replaced.
 
+Those figures were measured without the vocabulary, though, and the vocabulary
+turned out to reopen the same door — see [below](#the-vocabulary-reopened-the-same-door).
+
 The accuracy cost is small on dictation, where each 30-second window is largely
 self-contained; dropping the conditioning also removes the repetition loops it
 can trigger. Over 60 s of read French, `beam_size=2` without conditioning agrees
@@ -215,6 +218,124 @@ Two beams buy that back cheaply.
 
 Transcription runs at roughly **0.3 × real time**, so a 3-minute dictation takes
 about a minute.
+
+### The vocabulary reopened the same door
+
+Turning off `condition_on_previous_text` caps the decoder prompt, and the
+measurements above say it works. It does — until something else prompts the
+decoder. `hotwords` does, through the very same branch:
+
+```python
+# faster_whisper/transcribe.py
+if previous_tokens or (hotwords and not prefix):
+    prompt.append(tokenizer.sot_prev)
+```
+
+Since the daemon passes the vocabulary on every call, the cap was off in
+production and nowhere else. Same 38 s recording, same options, the vocabulary
+the only variable:
+
+| | Result |
+|---|---|
+| without the vocabulary | 11.6 s, 8 segments |
+| with the 17 terms | **OOM** on the 2nd window |
+
+Reproducible in both directions. The dependency on length is real but indirect —
+the failure always lands on the *second* 30-second window:
+
+| 10 s | 20 s | 38 s |
+|---|---|---|
+| OK | OK | **OOM** |
+
+And it is not a budget of prompt tokens: **4 terms fail where 12 pass**,
+deterministically across runs, because the prompt changes *which* tokens get
+decoded and not merely how many. Trimming the vocabulary is a coin toss, not a
+fix.
+
+Cutting is. The recording is split into pieces of at most 20 s and each piece
+gets its own `transcribe()` call, which bounds what any single call has to
+decode.
+
+The cut lands on a silence rather than on a stopwatch: `max_speech_duration_s`
+splits at the last silence over 100 ms, where cutting at a flat interval slices
+through a word and both halves then decode into something neither of them was.
+
+The 20 s is not "just under the 30-second window", and assuming it was is what
+made the first attempt at this fix fail on the first real long dictation. The
+silences are dropped, so a piece is 20 s of *dense* speech — worth far more
+decoded tokens than any natural 30 s of dictation, pauses included. It is those
+tokens that are allocated, so the piece has to be short enough that a full one
+still fits. On 164 s of real French dictation, with the vocabulary:
+
+| `CHUNK_SECONDS` | Peak VRAM | |
+|---|---|---|
+| 28 | 1484 MiB | **OOM** |
+| 24 | 1356 MiB | OK |
+| 22 | 1324 MiB | OK |
+| **20** | **1324 MiB** | OK |
+
+20 rather than 24 to sit two steps below the cliff rather than one, and because
+the peak has plateaued by then — shorter pieces buy no further margin. The
+property that was wanted all along finally holds against real speech:
+
+| | Peak VRAM |
+|---|---|
+| 164 s, full vocabulary | 1324 MiB |
+| 8 min, full vocabulary | **1324 MiB** |
+
+The time cost is nil: 55.5 s at 20 against 53.8 s at 24, on the same 164 s.
+
+### The fallback nobody looks at
+
+Chunk size alone never explained the failures. 4 vocabulary terms failed where
+12 passed; a 20 s piece died where a 25 s one lived. Turning on faster-whisper's
+debug log gave the missing line:
+
+```
+Compression ratio threshold is not met with temperature 0.0 (27.045455 > 2.400000)
+```
+
+A compression ratio of 27 is a repetition loop: the decoder goes round in
+circles and fills the window to its 448-token ceiling. faster-whisper then
+retries the window by sampling — and `best_of` defaults to **5**, so the retry
+decodes 2.5 × wider than the `beam_size=2` it is replacing. Tokens times width,
+in one step. That is the discrete jump, and because a loop depends on *what is
+being said* rather than on how long it is, it lands unpredictably.
+
+`best_of=2` aligns the fallback with the beam. Every configuration that used to
+OOM then completes — including the 28 s pieces that failed reliably before. The
+failure was never really about size.
+
+### Context across the cuts
+
+Each piece is decoded cold, so a cut falling mid-sentence leaves the decoder
+guessing. On a real 164 s dictation containing 56 s without a single pause, one
+seam came back with its clause trailing off into an ellipsis and the next piece
+starting cold right after it: the qualifier the speaker had used was gone, and
+the sentence read as cut off mid-thought.
+
+So the tail of the running transcription — 40 words — is handed to the next
+piece as `initial_prompt`: the context `condition_on_previous_text` used to
+give, except bounded, and paid for once rather than growing with the recording.
+
+The obvious alternative, repeating a few seconds of audio at the head of each
+piece and stitching the texts, reads better at the seam — and silently drops
+speech, the more so the more it repeats:
+
+| | Speech lost against the baseline |
+|---|---|
+| overlap 3 s | one word |
+| overlap 5 s | eight words — a whole enumeration |
+| overlap 7 s | more still |
+| **40 words of context** | **none** |
+
+Not a stitching bug — the words were never decoded. Measured on the same
+recording, the context version drops nothing, restores the missing qualifier,
+and fixes a word the baseline had misheard. A ragged seam is cosmetic; a
+dictation missing a phrase the speaker said is not.
+
+The context costs 64 MiB — the peak goes from 1324 to **1388 MiB** — and holds
+there over 8 minutes of speech. The result is deterministic run to run.
 
 ### A failure is never reported as silence
 
@@ -247,6 +368,10 @@ result; `hotwords` wins because it feeds directly from a list of terms.
 
 The file is **re-read on every transcription**: adding a term takes effect
 immediately, without restarting the daemon or reloading the model.
+
+`hotwords` is not free on a small card, though: it prompts the decoder, and that
+is what the [chunking](#the-vocabulary-reopened-the-same-door) exists to pay
+for.
 
 ### Why not Speed of Sound
 

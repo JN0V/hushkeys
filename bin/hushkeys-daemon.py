@@ -21,6 +21,11 @@ import wave
 SOCKET_PATH = "/tmp/hushkeys-daemon.sock"
 PID_FILE = "/tmp/hushkeys-daemon.pid"
 MODEL_ID = os.environ.get("HUSHKEYS_MODEL", "medium")
+SAMPLE_RATE = 16000
+# Longest piece handed to one transcribe() call — see split_on_silence.
+CHUNK_SECONDS = 20.0
+# Words of the running transcription handed to the next piece — see transcribe_file.
+CONTEXT_WORDS = 40
 VOCAB_FILE = os.environ.get(
     "HUSHKEYS_VOCAB_FILE", os.path.expanduser("~/.config/hushkeys/vocabulary.txt")
 )
@@ -45,24 +50,159 @@ def transcribe_options():
         beam=5, conditioning off  -> 10 min of speech peaks at 1548 MiB : OOM
         beam=2, conditioning off  ->  1 h  of speech peaks at 1356 MiB : OK
 
-    Without the conditioning the peak stops depending on the length of the
-    recording altogether: an hour of speech costs what two minutes cost. An OOM
-    is not recoverable either — see the daemon loop — so the point is to stay
-    inside the envelope rather than gamble on how long the dictation runs.
-
     Dropping the conditioning costs little on dictation, where each 30-second
     window is largely self-contained, and it removes the repetition loops it
     can trigger. beam_size=2 rather than 1: at 1 the decoder starts missing
     proper nouns at window boundaries — the very context the conditioning used
     to supply — and the second beam buys that back for 32 MiB.
+
+    Those measurements were taken without `hotwords`, which the daemon always
+    passes — see split_on_silence for why that matters, and why the VAD runs
+    there rather than here.
+
+    best_of is the same knob as beam_size, for the path nobody looks at. When a
+    window fails the compression-ratio or log-probability threshold,
+    faster-whisper retries it by sampling, and best_of defaults to 5 — so the
+    fallback quietly decodes 2.5x wider than the beam it is replacing. That is
+    the discrete jump behind every erratic OOM here: a repetition loop fills the
+    window to its 448-token ceiling ("Compression ratio threshold is not met
+    with temperature 0.0 (27.045455 > 2.400000)"), and the retry then decodes
+    those tokens five candidates wide.
+
+    It explains what nothing else did — why 4 hotwords failed where 12 passed,
+    and why a 20 s piece could die where a 25 s one lived. The loop depends on
+    what is being said, not on how long it is. With best_of=2 every
+    configuration that used to OOM completes, including a 28 s piece, which is
+    the point: the failure was never really about size.
     """
     return dict(
         language="fr",
         beam_size=2,
+        best_of=2,
         condition_on_previous_text=False,
-        vad_filter=True,
-        vad_parameters=dict(min_silence_duration_ms=500),
+        # The VAD already ran, in split_on_silence: running it again here would
+        # only re-scan audio that is speech by construction.
+        vad_filter=False,
     )
+
+
+def split_on_silence(audio):
+    """Cut `audio` into pieces of at most CHUNK_SECONDS, at silences.
+
+    Turning off condition_on_previous_text was supposed to cap the decoder
+    prompt, and it does — but `hotwords` reopens the very same branch:
+
+        # faster_whisper/transcribe.py
+        if previous_tokens or (hotwords and not prefix):
+            prompt.append(tokenizer.sot_prev)
+
+    So the vocabulary silently undoes the cap above, and on a 2 GB MX230 a
+    dictation past one 30-second window dies with "CUDA failed with error out
+    of memory". Same 38 s recording, same options, only hotwords differing:
+
+        without the vocabulary          -> 11.6 s, 8 segments : OK
+        with the 17 terms of vocabulary -> OOM on the 2nd window
+
+    Reproducible in both directions, and not a matter of prompt length: 4 terms
+    fail where 12 pass, deterministically, because the prompt changes which
+    tokens get decoded rather than just how many. Trimming the vocabulary is a
+    coin toss, not a fix.
+
+    Cutting is. One transcribe() call per piece bounds what any single call has
+    to decode, so the peak stops depending on the length of the dictation: 8 min
+    of real speech with the full vocabulary peaks at 1324 MiB, exactly what
+    164 s costs.
+
+    The cut lands on silence rather than on a stopwatch — max_speech_duration_s
+    splits at the last silence over 100 ms — because cutting at a flat interval
+    slices through a word, and both halves then decode into something neither of
+    them was.
+
+    CHUNK_SECONDS is not "just under the 30-second window": the silences are
+    dropped, so a piece is 20 s of *dense* speech, worth far more decoded tokens
+    than any natural 30 s of dictation. It is those tokens, against the 1500
+    encoder frames and the beam width, that are allocated — so the piece has to
+    be short enough that a full one still fits. Measured on the MX230, on 164 s
+    of real French dictation:
+
+        CHUNK_SECONDS = 28  ->  1484 MiB : OOM
+        CHUNK_SECONDS = 24  ->  1356 MiB : OK
+        CHUNK_SECONDS = 22  ->  1324 MiB : OK
+        CHUNK_SECONDS = 20  ->  1324 MiB : OK
+
+    20 rather than 24 to sit two steps below the cliff rather than one, and
+    because the peak has plateaued by then: shorter pieces buy no further
+    margin. It holds over length — 8 min of the same speech also peaks at
+    1324 MiB — and costs almost nothing in time (55.5 s against 53.8 s at 24).
+    """
+    import numpy as np
+    from faster_whisper.vad import VadOptions, get_speech_timestamps
+
+    speech = get_speech_timestamps(
+        audio,
+        VadOptions(
+            min_silence_duration_ms=500, max_speech_duration_s=CHUNK_SECONDS
+        ),
+        sampling_rate=SAMPLE_RATE,
+    )
+
+    limit = int(CHUNK_SECONDS * SAMPLE_RATE)
+    chunks, current, length = [], [], 0
+    for window in speech:
+        piece = audio[window["start"] : window["end"]]
+        if current and length + len(piece) > limit:
+            chunks.append(np.concatenate(current))
+            current, length = [], 0
+        current.append(piece)
+        length += len(piece)
+    if current:
+        chunks.append(np.concatenate(current))
+    return chunks
+
+
+def transcribe_file(model, wav_path):
+    """Transcribe a recording of any length. Empty means nothing was heard.
+
+    Each piece is decoded cold, which shows at the seams when the cut had to
+    fall mid-sentence — the decoder picks up with no idea what preceded. On a
+    real 164 s dictation containing 56 s without a single pause, one seam came
+    back with its clause trailing off into an ellipsis: the qualifier the
+    speaker had used was gone, and the sentence read as cut off mid-thought.
+
+    So the tail of what has been transcribed so far is handed to the next piece
+    as initial_prompt. That is the context condition_on_previous_text used to
+    supply, except bounded: 40 words, not a window that grows with the
+    recording.
+
+    The alternative — repeating a few seconds of audio at the head of each piece
+    and stitching the texts — reads better at the seam but silently drops
+    speech, and worse the more it repeats:
+
+        overlap 3 s  -> loses one word
+        overlap 5 s  -> loses eight, a whole enumeration
+        overlap 7 s  -> loses more still
+
+    The words are never decoded at all, so no amount of care in the stitching
+    buys them back. Measured against the same baseline, 40 words of context drop
+    **nothing** and restore the missing qualifier. A ragged seam is cosmetic; a
+    dictation missing a phrase the speaker said is not. Hence this, and not
+    that.
+    """
+    from faster_whisper.audio import decode_audio
+
+    audio = decode_audio(wav_path, sampling_rate=SAMPLE_RATE)
+    hotwords = load_vocabulary()
+
+    parts = []
+    for chunk in split_on_silence(audio):
+        context = " ".join(" ".join(parts).split()[-CONTEXT_WORDS:]) if parts else None
+        segments, _info = model.transcribe(
+            chunk, hotwords=hotwords, initial_prompt=context, **transcribe_options()
+        )
+        text = " ".join(seg.text.strip() for seg in segments)
+        if text:
+            parts.append(text)
+    return " ".join(parts)
 
 
 def wav_duration(path):
@@ -223,10 +363,7 @@ def start_daemon():
             t0 = time.time()
             duration = wav_duration(wav_path)
             try:
-                segments, _info = model.transcribe(
-                    wav_path, hotwords=load_vocabulary(), **transcribe_options()
-                )
-                text = " ".join(seg.text.strip() for seg in segments)
+                text = transcribe_file(model, wav_path)
             except Exception as e:
                 # Never let a failure reach the client as an empty answer: it
                 # would show up as "nothing heard" and hide the real cause.

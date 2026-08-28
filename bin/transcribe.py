@@ -43,10 +43,6 @@ try:
 except Exception:
     model = WhisperModel(MODEL_ID, device="cpu", compute_type="int8")
 
-segments, _info = model.transcribe(
-    WAV_FILE, hotwords=daemon.load_vocabulary(), **daemon.transcribe_options()
-)
-
-text = " ".join(seg.text.strip() for seg in segments)
+text = daemon.transcribe_file(model, WAV_FILE)
 if text:
     print(text)
