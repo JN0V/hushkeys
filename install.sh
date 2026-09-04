@@ -32,6 +32,15 @@ if [ ${#MISSING[@]} -gt 0 ]; then
 fi
 green "parecord, socat, notify-send, ydotool, wl-clipboard present"
 
+# The top-bar indicator runs on the system Python with PyGObject. Optional:
+# without it, the state is shown through notifications.
+if python3 -c 'import gi' 2>/dev/null; then
+    green "python3-gi present (top-bar indicator)"
+else
+    warn "python3-gi missing — the dictation state will use notifications only"
+    echo "    sudo apt install -y python3-gi"
+fi
+
 if ! command -v uv >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/uv" ]; then
     warn "uv missing — needed to install a dedicated CPython."
     echo "    curl -LsSf https://astral.sh/uv/install.sh | sh"

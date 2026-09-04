@@ -15,7 +15,72 @@ source "$SCRIPT_DIR/hushkeys-env.sh"
 DAEMON_PY="$SCRIPT_DIR/hushkeys-daemon.py"
 TRANSCRIBE="$SCRIPT_DIR/transcribe.py"
 
-notify() { notify-send -i "${2:-audio-input-microphone}" "hushkeys" "$1" 2>/dev/null; }
+INDICATOR="$SCRIPT_DIR/hushkeys-indicator"
+
+# Notifications are transient (-e): they do not stay in the notification list,
+# so a day of dictation no longer leaves a pile of "Listening..." behind. Only
+# failures are kept (keep), since their text is what the user needs to read.
+#
+# Not --replace-id: updating a notification whose banner is mid-animation
+# crashes GNOME Shell 50's message tray (TypeError in _showNotificationCompleted,
+# this._notification is null), after which no banner shows again until the
+# session is restarted.
+notify() {
+    local transient=-e
+    [ "${3:-}" = keep ] && transient=""
+    notify-send $transient -i "${2:-audio-input-microphone}" "hushkeys" "$1" 2>/dev/null
+}
+
+indicator_call() {
+    gdbus call --session --dest org.hushkeys.Indicator \
+        --object-path /org/hushkeys/Indicator \
+        --method org.hushkeys.Indicator.SetState "$1" "$2" >/dev/null 2>&1
+}
+
+# Something hosts StatusNotifier items: the AppIndicator extension under GNOME,
+# the panel itself under KDE. Without it the indicator has nowhere to appear.
+indicator_hosted() {
+    command -v python3 >/dev/null 2>&1 &&
+    gdbus call --session --dest org.kde.StatusNotifierWatcher \
+        --object-path /StatusNotifierWatcher \
+        --method org.freedesktop.DBus.Properties.Get \
+        org.kde.StatusNotifierWatcher IsStatusNotifierHostRegistered 2>/dev/null |
+    grep -q true
+}
+
+# Show where the dictation stands: listening, transcribing, done, warning,
+# error. A banner vanishes after a few seconds and says nothing about the
+# current state, so the state lives in the top bar (hushkeys-indicator, spawned
+# at "listening" and gone after "done"). Notifications remain the fallback when
+# nothing hosts the indicator, and the vehicle for text worth reading.
+#
+#   indicate STATE TEXT [ICON] [keep]
+#     STATE goes to the indicator; TEXT/ICON to a notification when either the
+#     indicator is unavailable or the state is a warning or an error.
+indicate() {
+    local state="$1" text="$2" icon="${3:-audio-input-microphone}" keep="${4:-}"
+    local shown=false
+
+    if [ "${HUSHKEYS_INDICATOR:-1}" != 0 ]; then
+        if indicator_call "$state" "$text"; then
+            shown=true
+        elif [ "$state" = listening ] && indicator_hosted; then
+            # setsid -f: the indicator must outlive this process, which the
+            # GNOME shortcut runner reaps as soon as `hushkeys start` returns.
+            setsid -f python3 "$INDICATOR" "$state" "$text" </dev/null >/dev/null 2>&1
+            # Registering takes ~100 ms; give it up to a second.
+            for _ in $(seq 20); do
+                sleep 0.05
+                if indicator_call "$state" "$text"; then shown=true; break; fi
+            done
+        fi
+    fi
+
+    case "$state" in
+        warning|error) notify "$text" "$icon" $keep ;;
+        *) $shown || notify "$text" "$icon" ;;
+    esac
+}
 
 # Answers whose first byte is \x01 report a failure rather than a transcription
 # (see hushkeys-daemon.py). \x01 cannot occur in dictated text.
@@ -86,13 +151,13 @@ type_text() {
     local text="$1" previous=""
 
     if ! command -v wl-copy >/dev/null 2>&1; then
-        notify "wl-clipboard is not installed" dialog-warning
+        indicate error "wl-clipboard is not installed" dialog-error keep
         return 1
     fi
 
     if ! pgrep -x ydotoold >/dev/null 2>&1; then
         printf '%s' "$text" | wl-copy
-        notify "ydotoold is not running — text left in the clipboard" dialog-warning
+        indicate warning "ydotoold is not running — text left in the clipboard" dialog-warning keep
         return 1
     fi
 
@@ -117,7 +182,7 @@ case "${1:-start}" in
             exit 1
         fi
         rm -f "$WAVFILE"
-        notify "Listening..."
+        indicate listening "Listening..."
         parecord --channels=1 --rate=16000 --format=s16le --file-format=wav "$WAVFILE" &
         echo $! > "$PIDFILE"
         ;;
@@ -130,7 +195,7 @@ case "${1:-start}" in
         kill "$(cat "$PIDFILE")" 2>/dev/null
         rm -f "$PIDFILE"
         sleep 0.1   # let parecord flush its buffer
-        notify "Transcribing..."
+        indicate transcribing "Transcribing..."
 
         TEXT=$(daemon_transcribe "$WAVFILE")
         case "$TEXT" in
@@ -142,14 +207,14 @@ case "${1:-start}" in
                 mv -f "$WAVFILE" "$FAILED_WAV"
                 echo "Transcription failed: $REASON" >&2
                 echo "Recording kept: $FAILED_WAV" >&2
-                notify "Transcription failed — see journalctl --user -u hushkeys-daemon" dialog-error
+                indicate error "Transcription failed — see journalctl --user -u hushkeys-daemon" dialog-error keep
                 ;;
             "")
-                notify "Nothing heard" dialog-warning
+                indicate warning "Nothing heard" dialog-warning
                 rm -f "$WAVFILE"
                 ;;
             *)
-                type_text "$TEXT" && notify "Done"
+                type_text "$TEXT" && indicate done "Done"
                 rm -f "$WAVFILE"
                 ;;
         esac
@@ -179,6 +244,7 @@ Usage: hushkeys <command>
 Model      : $HUSHKEYS_MODEL   (override: HUSHKEYS_MODEL=small hushkeys ...)
 Vocabulary : $VOCAB_FILE
 Paste keys : $PASTE_KEYS   (HUSHKEYS_PASTE_KEYS=ctrl+shift+v for a terminal)
+Indicator  : ${HUSHKEYS_INDICATOR:-1}   (HUSHKEYS_INDICATOR=0 for notifications only)
 EOF
         ;;
 esac

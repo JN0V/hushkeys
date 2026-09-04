@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+"""Top-bar indicator for hushkeys: shows what the dictation is doing.
+
+A StatusNotifierItem (the protocol behind "app indicators"): under GNOME it
+needs the AppIndicator extension, enabled by default on Ubuntu; KDE and most
+other desktops speak it natively. Named theme icons only, so nothing is shipped:
+
+    listening      audio-input-microphone-symbolic   recording
+    transcribing   hourglass-symbolic                waiting for the model
+    done           object-select-symbolic            shown briefly, then exits
+    warning        dialog-warning-symbolic           stays until dismissed
+    error          dialog-error-symbolic             stays until dismissed
+
+`hushkeys` spawns this process at `start` and drives it over D-Bus:
+
+    gdbus call --session --dest org.hushkeys.Indicator \\
+        --object-path /org/hushkeys/Indicator \\
+        --method org.hushkeys.Indicator.SetState transcribing ""
+
+The process exits on its own after "done", on Dismiss (menu or click) once
+the dictation is over, and when the next dictation starts it is reused. A
+persistent warning or error is the point: a notification banner disappears,
+the icon does not.
+
+Exit codes: 3 when no StatusNotifier host is running (hushkeys then falls back
+to notifications), 4 when another indicator already owns the name.
+
+Runs on the system Python, not the venv: it needs PyGObject (python3-gi),
+which Ubuntu ships, and nothing from faster-whisper.
+"""
+
+import signal
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+gi.require_version("GLib", "2.0")
+from gi.repository import Gio, GLib  # noqa: E402
+
+# GLib.unix_signal_add() is deprecated from PyGObject 3.50 on; GLibUnix is
+# missing on older releases.
+try:
+    gi.require_version("GLibUnix", "2.0")
+    from gi.repository import GLibUnix  # noqa: E402
+    unix_signal_add = GLibUnix.signal_add
+except (ValueError, ImportError):
+    unix_signal_add = GLib.unix_signal_add
+
+BUS_NAME = "org.hushkeys.Indicator"
+CONTROL_PATH = "/org/hushkeys/Indicator"
+ITEM_PATH = "/StatusNotifierItem"
+MENU_PATH = "/MenuBar"
+
+WATCHER_NAME = "org.kde.StatusNotifierWatcher"
+WATCHER_PATH = "/StatusNotifierWatcher"
+
+DONE_LINGER_MS = 1500
+
+STATES = {
+    #           icon                               title
+    "listening":    ("audio-input-microphone-symbolic", "Listening"),
+    "transcribing": ("hourglass-symbolic",              "Transcribing"),
+    "done":         ("object-select-symbolic",          "Done"),
+    "warning":      ("dialog-warning-symbolic",         "Warning"),
+    "error":        ("dialog-error-symbolic",           "Error"),
+}
+# States after which the dictation is over: a click dismisses the icon.
+FINAL_STATES = ("done", "warning", "error")
+
+CONTROL_XML = """
+<node>
+  <interface name="org.hushkeys.Indicator">
+    <method name="SetState">
+      <arg type="s" name="state" direction="in"/>
+      <arg type="s" name="detail" direction="in"/>
+    </method>
+    <method name="Quit"/>
+  </interface>
+</node>
+"""
+
+ITEM_XML = """
+<node>
+  <interface name="org.kde.StatusNotifierItem">
+    <property name="Category" type="s" access="read"/>
+    <property name="Id" type="s" access="read"/>
+    <property name="Title" type="s" access="read"/>
+    <property name="Status" type="s" access="read"/>
+    <property name="IconName" type="s" access="read"/>
+    <property name="IconThemePath" type="s" access="read"/>
+    <property name="Menu" type="o" access="read"/>
+    <property name="ItemIsMenu" type="b" access="read"/>
+    <property name="ToolTip" type="(sa(iiay)ss)" access="read"/>
+    <method name="Activate">
+      <arg type="i" name="x" direction="in"/>
+      <arg type="i" name="y" direction="in"/>
+    </method>
+    <method name="SecondaryActivate">
+      <arg type="i" name="x" direction="in"/>
+      <arg type="i" name="y" direction="in"/>
+    </method>
+    <method name="ContextMenu">
+      <arg type="i" name="x" direction="in"/>
+      <arg type="i" name="y" direction="in"/>
+    </method>
+    <method name="Scroll">
+      <arg type="i" name="delta" direction="in"/>
+      <arg type="s" name="orientation" direction="in"/>
+    </method>
+    <signal name="NewTitle"/>
+    <signal name="NewIcon"/>
+    <signal name="NewToolTip"/>
+    <signal name="NewStatus">
+      <arg type="s" name="status"/>
+    </signal>
+  </interface>
+</node>
+"""
+
+# The GNOME extension only shows an item that exposes a menu, so a minimal
+# com.canonical.dbusmenu with a single "Dismiss" entry.
+MENU_XML = """
+<node>
+  <interface name="com.canonical.dbusmenu">
+    <property name="Version" type="u" access="read"/>
+    <property name="Status" type="s" access="read"/>
+    <property name="TextDirection" type="s" access="read"/>
+    <property name="IconThemePath" type="as" access="read"/>
+    <method name="GetLayout">
+      <arg type="i" name="parentId" direction="in"/>
+      <arg type="i" name="recursionDepth" direction="in"/>
+      <arg type="as" name="propertyNames" direction="in"/>
+      <arg type="u" name="revision" direction="out"/>
+      <arg type="(ia{sv}av)" name="layout" direction="out"/>
+    </method>
+    <method name="GetGroupProperties">
+      <arg type="ai" name="ids" direction="in"/>
+      <arg type="as" name="propertyNames" direction="in"/>
+      <arg type="a(ia{sv})" name="properties" direction="out"/>
+    </method>
+    <method name="GetProperty">
+      <arg type="i" name="id" direction="in"/>
+      <arg type="s" name="name" direction="in"/>
+      <arg type="v" name="value" direction="out"/>
+    </method>
+    <method name="Event">
+      <arg type="i" name="id" direction="in"/>
+      <arg type="s" name="eventId" direction="in"/>
+      <arg type="v" name="data" direction="in"/>
+      <arg type="u" name="timestamp" direction="in"/>
+    </method>
+    <method name="EventGroup">
+      <arg type="a(isvu)" name="events" direction="in"/>
+      <arg type="ai" name="idErrors" direction="out"/>
+    </method>
+    <method name="AboutToShow">
+      <arg type="i" name="id" direction="in"/>
+      <arg type="b" name="needUpdate" direction="out"/>
+    </method>
+    <method name="AboutToShowGroup">
+      <arg type="ai" name="ids" direction="in"/>
+      <arg type="ai" name="updatesNeeded" direction="out"/>
+      <arg type="ai" name="idErrors" direction="out"/>
+    </method>
+    <signal name="LayoutUpdated">
+      <arg type="u" name="revision"/>
+      <arg type="i" name="parent"/>
+    </signal>
+    <signal name="ItemsPropertiesUpdated">
+      <arg type="a(ia{sv})" name="updatedProps"/>
+      <arg type="a(ias)" name="removedProps"/>
+    </signal>
+  </interface>
+</node>
+"""
+
+DISMISS_ID = 1
+
+
+class Indicator:
+    def __init__(self, loop):
+        self.loop = loop
+        self.conn = None
+        self.state = "listening"
+        self.detail = ""
+        self.linger_id = 0
+        self.registered = False
+
+    # ── D-Bus plumbing ────────────────────────────────────────────────────
+
+    def on_bus_acquired(self, conn, _name):
+        self.conn = conn
+        for path, xml, handler in (
+            (CONTROL_PATH, CONTROL_XML, self.control_call),
+            (ITEM_PATH, ITEM_XML, self.item_call),
+            (MENU_PATH, MENU_XML, self.menu_call),
+        ):
+            info = Gio.DBusNodeInfo.new_for_xml(xml).interfaces[0]
+            # register_object() is deprecated from PyGObject 3.50 on; the
+            # replacement is missing on older releases.
+            register = getattr(conn, "register_object_with_closures2", conn.register_object)
+            register(path, info, handler, self.get_property, None)
+
+    def on_name_acquired(self, _conn, _name):
+        # The watcher may appear later (extension re-enabled, session start):
+        # register whenever it has an owner.
+        Gio.bus_watch_name_on_connection(
+            self.conn, WATCHER_NAME, Gio.BusNameWatcherFlags.NONE,
+            self.on_watcher_appeared, self.on_watcher_vanished)
+
+    def on_name_lost(self, _conn, _name):
+        # Another indicator is running: let it carry on.
+        sys.exit(4)
+
+    def on_watcher_appeared(self, conn, _name, _owner):
+        try:
+            hosted = conn.call_sync(
+                WATCHER_NAME, WATCHER_PATH, "org.freedesktop.DBus.Properties",
+                "Get", GLib.Variant("(ss)", (WATCHER_NAME, "IsStatusNotifierHostRegistered")),
+                None, Gio.DBusCallFlags.NONE, 2000, None).unpack()[0]
+            if not hosted:
+                raise RuntimeError("no StatusNotifier host")
+            conn.call_sync(
+                WATCHER_NAME, WATCHER_PATH, WATCHER_NAME, "RegisterStatusNotifierItem",
+                GLib.Variant("(s)", (BUS_NAME,)),
+                None, Gio.DBusCallFlags.NONE, 2000, None)
+        except Exception as exc:  # noqa: BLE001
+            if not self.registered:
+                print(f"hushkeys-indicator: cannot register: {exc}", file=sys.stderr)
+                sys.exit(3)
+            return
+        self.registered = True
+
+    def on_watcher_vanished(self, _conn, _name):
+        if not self.registered:
+            print("hushkeys-indicator: no StatusNotifierWatcher on the bus", file=sys.stderr)
+            sys.exit(3)
+
+    def get_property(self, _conn, _sender, path, _iface, name):
+        icon, title = STATES[self.state]
+        if path == ITEM_PATH:
+            return {
+                "Category": GLib.Variant("s", "ApplicationStatus"),
+                "Id": GLib.Variant("s", "hushkeys"),
+                "Title": GLib.Variant("s", "hushkeys"),
+                "Status": GLib.Variant("s", "Active"),
+                "IconName": GLib.Variant("s", icon),
+                "IconThemePath": GLib.Variant("s", ""),
+                "Menu": GLib.Variant("o", MENU_PATH),
+                "ItemIsMenu": GLib.Variant("b", False),
+                "ToolTip": GLib.Variant("(sa(iiay)ss)", (icon, [], f"hushkeys — {title}", self.detail)),
+            }[name]
+        if path == MENU_PATH:
+            return {
+                "Version": GLib.Variant("u", 3),
+                "Status": GLib.Variant("s", "normal"),
+                "TextDirection": GLib.Variant("s", "ltr"),
+                "IconThemePath": GLib.Variant("as", []),
+            }[name]
+        return None
+
+    def emit(self, name, args=None):
+        self.conn.emit_signal(None, ITEM_PATH, "org.kde.StatusNotifierItem", name, args)
+
+    # ── behaviour ─────────────────────────────────────────────────────────
+
+    def set_state(self, state, detail):
+        if state not in STATES:
+            return False
+        self.state, self.detail = state, detail
+        if self.linger_id:
+            GLib.source_remove(self.linger_id)
+            self.linger_id = 0
+        if self.conn:
+            self.emit("NewIcon")
+            self.emit("NewToolTip")
+            self.emit("NewStatus", GLib.Variant("(s)", ("Active",)))
+        if state == "done":
+            self.linger_id = GLib.timeout_add(DONE_LINGER_MS, self.quit)
+        return True
+
+    def dismiss(self):
+        # While listening or transcribing the icon reports something real; it
+        # goes away only once the dictation is over.
+        if self.state in FINAL_STATES:
+            self.quit()
+
+    def quit(self):
+        self.loop.quit()
+        return GLib.SOURCE_REMOVE
+
+    # ── method handlers ───────────────────────────────────────────────────
+
+    def control_call(self, _conn, _sender, _path, _iface, method, params, invocation):
+        if method == "SetState":
+            state, detail = params.unpack()
+            if self.set_state(state, detail):
+                invocation.return_value(None)
+            else:
+                invocation.return_dbus_error("org.hushkeys.Indicator.BadState",
+                                             f"unknown state {state!r}")
+        elif method == "Quit":
+            invocation.return_value(None)
+            self.quit()
+
+    def item_call(self, _conn, _sender, _path, _iface, method, _params, invocation):
+        invocation.return_value(None)
+        if method in ("Activate", "SecondaryActivate"):
+            self.dismiss()
+
+    def menu_call(self, _conn, _sender, _path, _iface, method, params, invocation):
+        item = (DISMISS_ID, {"label": GLib.Variant("s", "Dismiss"),
+                             "enabled": GLib.Variant("b", True),
+                             "visible": GLib.Variant("b", True)}, [])
+        root = (0, {"children-display": GLib.Variant("s", "submenu")},
+                [GLib.Variant("(ia{sv}av)", item)])
+        if method == "GetLayout":
+            parent = params.unpack()[0]
+            layout = root if parent == 0 else item
+            invocation.return_value(GLib.Variant("(u(ia{sv}av))", (1, layout)))
+        elif method == "GetGroupProperties":
+            ids = params.unpack()[0]
+            props = [(i, p) for i, p, _ in (root, item) if not ids or i in ids]
+            invocation.return_value(GLib.Variant("(a(ia{sv}))", (props,)))
+        elif method == "GetProperty":
+            item_id, name = params.unpack()
+            props = item[1] if item_id == DISMISS_ID else root[1]
+            invocation.return_value(GLib.Variant("(v)", (props.get(name, GLib.Variant("s", "")),)))
+        elif method == "Event":
+            item_id, event, _data, _ts = params.unpack()
+            invocation.return_value(None)
+            if item_id == DISMISS_ID and event == "clicked":
+                self.quit()
+        elif method == "EventGroup":
+            invocation.return_value(GLib.Variant("(ai)", ([],)))
+            for item_id, event, _data, _ts in params.unpack()[0]:
+                if item_id == DISMISS_ID and event == "clicked":
+                    self.quit()
+        elif method == "AboutToShow":
+            invocation.return_value(GLib.Variant("(b)", (False,)))
+        elif method == "AboutToShowGroup":
+            invocation.return_value(GLib.Variant("(aiai)", ([], [])))
+
+
+def main():
+    loop = GLib.MainLoop()
+    indicator = Indicator(loop)
+    if len(sys.argv) > 1:
+        indicator.set_state(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "")
+
+    Gio.bus_own_name(Gio.BusType.SESSION, BUS_NAME, Gio.BusNameOwnerFlags.NONE,
+                     indicator.on_bus_acquired, indicator.on_name_acquired,
+                     indicator.on_name_lost)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        unix_signal_add(GLib.PRIORITY_DEFAULT, sig, indicator.quit)
+    loop.run()
+
+
+if __name__ == "__main__":
+    main()

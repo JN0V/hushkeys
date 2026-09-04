@@ -53,6 +53,11 @@ env HUSHKEYS_PASTE_KEYS=ctrl+shift+v /home/<user>/bin/hushkeys toggle
 Personal configuration lives in `~/.config/hushkeys/vocabulary.txt`, outside the
 repository.
 
+The dictation state shows as an icon in the top bar
+([why](#the-state-lives-in-the-top-bar-not-in-a-banner)); it needs `python3-gi`,
+which Ubuntu ships, and under GNOME the AppIndicator extension, enabled by
+default on Ubuntu. Without them the state falls back to notifications.
+
 Without an NVIDIA GPU everything still works: the daemon falls back to CPU
 `int8`, two to three times slower (see the table below).
 
@@ -352,6 +357,43 @@ the recording in `/tmp/hushkeys-failed.wav`. And because a lost CUDA context is
 not recoverable in-process, the daemon exits non-zero on a CUDA error and lets
 `Restart=on-failure` reload the model.
 
+### The state lives in the top bar, not in a banner
+
+A dictation goes through three states — listening, transcribing, done — and a
+notification for each of them answers the wrong question. A banner disappears
+after a few seconds, so it says what *happened*, never where things *stand*:
+mid-sentence, nothing on screen tells whether the microphone is still open.
+And every dictation left its three entries in the notification list, which
+piled up over a day.
+
+So the state is a **top-bar icon** — `bin/hushkeys-indicator`, a
+StatusNotifierItem, the protocol behind app indicators. Under GNOME it needs the
+AppIndicator extension, enabled by default on Ubuntu; KDE and most other
+desktops host it natively. `hushkeys start` spawns it, `stop` drives it over
+D-Bus, and it exits on its own once the text is pasted:
+
+| state        | icon               | then                              |
+|--------------|--------------------|-----------------------------------|
+| listening    | microphone         | until `stop`                      |
+| transcribing | hourglass          | until the daemon answers          |
+| done         | check mark         | 1.5 s, then the icon goes away    |
+| warning      | `⚠` — nothing heard, text left in the clipboard | stays until dismissed |
+| error        | `⊗` — transcription failed              | stays until dismissed |
+
+A warning or an error stays put until the next dictation, a click, or *Dismiss*
+in its menu: that is the point. A notification still carries the text worth
+reading (why it failed, where to look), since the top bar cannot. Without a
+StatusNotifier host, or with `HUSHKEYS_INDICATOR=0`, everything goes through
+notifications as before.
+
+Those notifications are now **transient**: GNOME drops them once the banner is
+gone instead of keeping them in the list. Only failures are kept. The obvious
+alternative — one notification updated in place with `--replace-id` — was tried
+and withdrawn: updating a notification while its banner is animating out
+crashes the message tray of GNOME Shell 50 (`TypeError: this._notification is
+null` in `_showNotificationCompleted`), after which no banner shows again until
+the session is restarted.
+
 ### Technical vocabulary goes through `hotwords`
 
 Unbiased, on a real dictated sentence:
@@ -403,6 +445,7 @@ as input, so no intermediate resampling.
 install.sh                venv, symlinks, services — idempotent
 bin/hushkeys-env.sh       shared environment (venv, CUDA, model, vocabulary)
 bin/hushkeys              front end: start / stop / toggle / daemon-*
+bin/hushkeys-indicator    top-bar icon showing the dictation state
 bin/hushkeys-daemon       daemon wrapper for systemd
 bin/hushkeys-daemon.py    resident-model daemon (Unix socket)
 bin/transcribe.py         fallback without the daemon
