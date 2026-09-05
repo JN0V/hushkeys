@@ -12,10 +12,12 @@ cannot poison the next run. The subprocess goes through the daemon's own
 transcribe_file, so the numbers are those of a real dictation: same chunking,
 same decoding options, same vocabulary.
 
-The report lands in reports/<host>-<date>.json (the numbers) and .md (the
+The report lands in reports/<label>-<date>.json (the numbers) and .md (the
 numbers plus a checklist to fill in by hand: pasting, indicator, suspend).
-Commit both. The recording itself stays out of the repository, under
-~/.local/share/hushkeys/bench/.
+Commit both. The label names the hardware (the card, or the CPU without
+one), never the machine: a hostname is the kind of thing that must not end
+up in a public repository. --label overrides it. The recording itself stays
+out of the repository, under ~/.local/share/hushkeys/bench/.
 """
 import argparse
 import datetime as dt
@@ -94,9 +96,19 @@ def vram_used_mib():
         return None
 
 
+def hardware_label(gpu, cpu_only=False):
+    """What the report is filed under: "mx230", "rtx-2070", "cpu-i7-10510u"."""
+    if gpu and not cpu_only:
+        name = re.sub(r"^(NVIDIA|GeForce|RTX|GTX|Quadro|Tesla)\s+", "", gpu["name"], flags=re.I)
+        name = re.sub(r"^(NVIDIA|GeForce)\s+", "", name, flags=re.I)
+    else:
+        m = re.search(r"(i[3579]-\w+|Ryzen \d \w+|Core Ultra \d \w+|Xeon \w+)", cpu_model())
+        name = "cpu-" + (m.group(1) if m else cpu_model().split()[0])
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "machine"
+
+
 def host_facts():
     return {
-        "hostname": platform.node(),
         "os": os_release(),
         "kernel": platform.release(),
         "desktop": os.environ.get("XDG_CURRENT_DESKTOP", ""),
@@ -296,8 +308,10 @@ def bench(args):
         if restart_daemon:
             subprocess.run(["systemctl", "--user", "start", "hushkeys-daemon"])
 
+    label = args.label or hardware_label(gpu, cpu_only=args.device == "cpu")
     report = {
         "schema": SCHEMA,
+        "label": label,
         "date": stamp,
         "hushkeys": hushkeys_commit(),
         "host": host_facts(),
@@ -314,9 +328,8 @@ def bench(args):
         "note": args.note,
     }
     os.makedirs(REPORTS, exist_ok=True)
-    slug = re.sub(r"[^a-z0-9]+", "-", report["host"]["hostname"].lower()).strip("-") or "host"
-    suffix = "-cpu" if args.device == "cpu" else ""
-    base = os.path.join(REPORTS, f"{slug}-{stamp}{suffix}")
+    slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-") or "machine"
+    base = os.path.join(REPORTS, f"{slug}-{stamp}")
     json.dump(report, open(base + ".json", "w"), ensure_ascii=False, indent=2)
     open(base + ".md", "w").write(report_markdown(report))
     print(f"\nRecommended: model={report['recommendation']['model']} ({report['recommendation']['reason']})")
@@ -343,7 +356,7 @@ Tick what was tried on this machine; strike what failed and say how.
 
 def report_markdown(r):
     h, g = r["host"], r["gpu"]
-    lines = [f"# {h['hostname']} — {r['date']}", ""]
+    lines = [f"# {r['label']} — {r['date']}", ""]
     lines += [
         f"- **OS**: {h['os']}, kernel {h['kernel']}",
         f"- **Desktop**: {h['desktop']} on {h['session']}, {h['gnome_shell'] or 'no gnome-shell'}",
@@ -387,7 +400,7 @@ def summarize():
         for x in r["runs"]:
             cell = (f"{x['load_s']} s | {x['transcribe_s']} s | {x['rtf']} | {x.get('vram_peak_mib') or '—'} | {x.get('agreement')}"
                     if x["status"] == "ok" else f"— | — | — | — | failed: {x['error'][:60]}")
-            rows.append(f"| [{h['hostname']}]({f[:-5]}.md) | {h['os']} | {h['session']} | {gpu} | {x['model']} "
+            rows.append(f"| [{r['label']}]({f[:-5]}.md) | {h['os']} | {h['session']} | {gpu} | {x['model']} "
                         f"| {x.get('device', '?')}/{x.get('compute', '?')} | {cell} |")
     head = [
         "# Reports",
@@ -419,6 +432,7 @@ def main():
                    help="which bench/passage.<lang>.txt to read (default: the configured language, else fr)")
     b.add_argument("--device", choices=["cpu"], help="force the CPU, to measure the no-GPU path")
     b.add_argument("--note", default="", help="free text kept in the report")
+    b.add_argument("--label", help="name the report is filed under (default: the card, or the CPU)")
     sub.add_parser("reports")
     args = p.parse_args()
     if args.cmd == "reports":

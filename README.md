@@ -615,7 +615,10 @@ largest model whose peak stays under 80 % of the card, the rest being the
 headroom a dictation longer than the passage needs; without one, the largest
 that keeps up with speech.
 
-It writes `reports/<host>-<date>.json` and `.md`. The `.md` carries a checklist
+It writes `reports/<label>-<date>.json` and `.md`, the label naming the card
+(`mx230`, `rtx-2070`) or the CPU when there is none (`cpu-i7-10510u`) — never
+the machine: a hostname has no business in a public repository, and the report
+records none. `--label` overrides it. The `.md` carries a checklist
 for what a bench cannot measure — pasting into a GTK field, a terminal and a
 browser, the top-bar indicator, dictation after a suspend, a dictation over two
 minutes — to be ticked by hand, with a word on how anything failed. Then
