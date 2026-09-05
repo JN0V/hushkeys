@@ -24,8 +24,11 @@ MODEL_ID = os.environ.get("HUSHKEYS_MODEL", "medium")
 # A Whisper language code, or "auto" — see transcribe_file for what auto does.
 LANGUAGE = os.environ.get("HUSHKEYS_LANGUAGE", "auto").strip().lower() or "auto"
 SAMPLE_RATE = 16000
-# Longest piece handed to one transcribe() call — see split_on_silence.
-CHUNK_SECONDS = 20.0
+# Longest piece handed to one transcribe() call — see split_on_silence. The
+# GPU value is a VRAM ceiling; the CPU has no such cliff and pays for a piece
+# shorter than one encoder window, so the two are not the same number.
+CHUNK_SECONDS_CUDA = 20.0
+CHUNK_SECONDS_CPU = 30.0
 # Words of the running transcription handed to the next piece — see transcribe_file.
 CONTEXT_WORDS = 40
 VOCAB_FILE = os.environ.get(
@@ -110,8 +113,19 @@ def resolve_language():
     return None
 
 
-def split_on_silence(audio):
-    """Cut `audio` into pieces of at most CHUNK_SECONDS, at silences.
+def chunk_seconds(model):
+    """How long a piece this model can afford — see split_on_silence.
+
+    Read off the loaded model rather than from pick_compute_type(): main()
+    falls back to the CPU when the GPU load fails, and the pieces have to
+    follow the model that actually exists, not the one that was asked for.
+    """
+    device = getattr(getattr(model, "model", None), "device", "cpu")
+    return CHUNK_SECONDS_CUDA if device == "cuda" else CHUNK_SECONDS_CPU
+
+
+def split_on_silence(audio, limit_seconds):
+    """Cut `audio` into pieces of at most `limit_seconds`, at silences.
 
     Turning off condition_on_previous_text was supposed to cap the decoder
     prompt, and it does — but `hotwords` reopens the very same branch:
@@ -142,22 +156,39 @@ def split_on_silence(audio):
     slices through a word, and both halves then decode into something neither of
     them was.
 
-    CHUNK_SECONDS is not "just under the 30-second window": the silences are
-    dropped, so a piece is 20 s of *dense* speech, worth far more decoded tokens
-    than any natural 30 s of dictation. It is those tokens, against the 1500
-    encoder frames and the beam width, that are allocated — so the piece has to
-    be short enough that a full one still fits. Measured on the MX230, on 164 s
-    of real French dictation:
+    On the GPU, the piece length is a VRAM ceiling. CHUNK_SECONDS_CUDA is not
+    "just under the 30-second window": the silences are dropped, so a piece is
+    20 s of *dense* speech, worth far more decoded tokens than any natural 30 s
+    of dictation. It is those tokens, against the 1500 encoder frames and the
+    beam width, that are allocated — so the piece has to be short enough that a
+    full one still fits. Measured on the MX230, on 164 s of real French
+    dictation:
 
-        CHUNK_SECONDS = 28  ->  1484 MiB : OOM
-        CHUNK_SECONDS = 24  ->  1356 MiB : OK
-        CHUNK_SECONDS = 22  ->  1324 MiB : OK
-        CHUNK_SECONDS = 20  ->  1324 MiB : OK
+        28  ->  1484 MiB : OOM
+        24  ->  1356 MiB : OK
+        22  ->  1324 MiB : OK
+        20  ->  1324 MiB : OK
 
     20 rather than 24 to sit two steps below the cliff rather than one, and
     because the peak has plateaued by then: shorter pieces buy no further
     margin. It holds over length — 8 min of the same speech also peaks at
     1324 MiB — and costs almost nothing in time (55.5 s against 53.8 s at 24).
+
+    On the CPU there is no cliff to stay under, and 20 s stops paying for
+    itself: the encoder runs over a 30-second window whatever the piece holds,
+    so a 20 s piece throws away a third of every pass. Measured on an i5-8250U
+    with no card, medium/int8, over 156.6 s of French dictation:
+
+        20  ->  12 pieces, 114.6 s and 124.3 s, 2173 MiB
+        30  ->   6 pieces,  67.6 s and  71.1 s, 2173 MiB
+
+    Same 360 words out, same peak, 42 % less time — 12 windows encoded against
+    6 for the same speech. Hence one window, and not more: that is where the
+    waste reaches zero. Whether a piece spanning several windows would do
+    better is untested — the sample above repeats one passage six times, so a
+    single 120 s piece holding all six fails the compression-ratio threshold
+    and decodes twice over (156.7 s). That measures the repetition, not the
+    length, and settles nothing beyond "one window is enough".
     """
     import numpy as np
     from faster_whisper.vad import VadOptions, get_speech_timestamps
@@ -165,12 +196,12 @@ def split_on_silence(audio):
     speech = get_speech_timestamps(
         audio,
         VadOptions(
-            min_silence_duration_ms=500, max_speech_duration_s=CHUNK_SECONDS
+            min_silence_duration_ms=500, max_speech_duration_s=limit_seconds
         ),
         sampling_rate=SAMPLE_RATE,
     )
 
-    limit = int(CHUNK_SECONDS * SAMPLE_RATE)
+    limit = int(limit_seconds * SAMPLE_RATE)
     chunks, current, length = [], [], 0
     for window in speech:
         piece = audio[window["start"] : window["end"]]
@@ -226,7 +257,7 @@ def transcribe_file(model, wav_path):
     options = transcribe_options()
 
     parts = []
-    for chunk in split_on_silence(audio):
+    for chunk in split_on_silence(audio, chunk_seconds(model)):
         context = " ".join(" ".join(parts).split()[-CONTEXT_WORDS:]) if parts else None
         segments, info = model.transcribe(
             chunk, hotwords=hotwords, initial_prompt=context, **options
