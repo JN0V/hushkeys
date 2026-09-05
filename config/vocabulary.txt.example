@@ -5,8 +5,10 @@
 # without restarting the daemon.
 #
 # Why it matters: unbiased, Whisper transcribes "IaC" as "Igacé" and
-# "git worktree" as "Gitworktree" in French speech. With these terms declared,
-# both come out right, for a measured cost of 0.2 s.
+# "git worktree" as "Gitworktree" (measured on French speech; every language
+# mangles jargon its own way). With these terms declared, both come out right,
+# for a measured cost of 0.2 s. The list is language-neutral: put in whatever
+# your dictations keep getting wrong.
 #
 # Copy to ~/.config/hushkeys/vocabulary.txt and adapt.
 

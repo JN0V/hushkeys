@@ -1,5 +1,5 @@
 #!/bin/bash
-# Offline French dictation — faster-whisper on an NVIDIA GPU.
+# Offline dictation — faster-whisper on an NVIDIA GPU.
 #
 #   hushkeys start   begin recording
 #   hushkeys stop    stop, transcribe, paste the text into the focused window

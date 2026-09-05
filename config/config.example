@@ -1,0 +1,13 @@
+# Per-machine settings for hushkeys. Sourced by bash: keep it to key=value lines.
+# Copy to ~/.config/hushkeys/config — install.sh does it, and asks the language.
+# Environment variables (HUSHKEYS_LANGUAGE, HUSHKEYS_MODEL) still win over it.
+
+# Language of the dictation, as a Whisper code: fr, en, de, es, it, pt, nl, ja…
+# "auto" detects it on the first piece of each dictation and keeps it for the
+# rest — one language per dictation, any language across dictations. A fixed
+# code is more reliable on very short recordings and skips the detection.
+language=auto
+
+# Whisper model: small, medium (default), large-v3. large-v3 needs ~1.6 GB of
+# VRAM in int8, plus decoding headroom — see README, "medium by default".
+#model=medium

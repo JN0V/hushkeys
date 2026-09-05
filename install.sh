@@ -89,6 +89,24 @@ else
     green "vocabulary initialised from the template"
 fi
 
+# The language is the one setting that differs from one person to the next, so
+# it is asked once, here, and kept in ~/.config/hushkeys/config. HUSHKEYS_LANGUAGE
+# in the environment answers for a scripted install; no terminal means "auto".
+if [ -f "$CONFIG_DIR/config" ]; then
+    green "existing config kept ($CONFIG_DIR/config)"
+else
+    LANG_CHOICE="${HUSHKEYS_LANGUAGE:-}"
+    if [ -z "$LANG_CHOICE" ] && [ -t 0 ]; then
+        echo "Dictation language — a Whisper code (fr, en, de, es, it…), or auto to"
+        echo "detect it on each dictation."
+        read -r -p "Language [auto]: " LANG_CHOICE
+    fi
+    LANG_CHOICE="${LANG_CHOICE:-auto}"
+    LANG_CHOICE="$(printf '%s' "$LANG_CHOICE" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+    sed "s/^language=.*/language=$LANG_CHOICE/" "$REPO/config/config.example" > "$CONFIG_DIR/config"
+    green "config written with language=$LANG_CHOICE ($CONFIG_DIR/config)"
+fi
+
 # ─── 4. Symlinks ─────────────────────────────────────────────────────────────
 step "4/6 — Symlinks"
 

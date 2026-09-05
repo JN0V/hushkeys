@@ -21,6 +21,8 @@ import wave
 SOCKET_PATH = "/tmp/hushkeys-daemon.sock"
 PID_FILE = "/tmp/hushkeys-daemon.pid"
 MODEL_ID = os.environ.get("HUSHKEYS_MODEL", "medium")
+# A Whisper language code, or "auto" — see transcribe_file for what auto does.
+LANGUAGE = os.environ.get("HUSHKEYS_LANGUAGE", "auto").strip().lower() or "auto"
 SAMPLE_RATE = 16000
 # Longest piece handed to one transcribe() call — see split_on_silence.
 CHUNK_SECONDS = 20.0
@@ -76,7 +78,7 @@ def transcribe_options():
     the point: the failure was never really about size.
     """
     return dict(
-        language="fr",
+        language=resolve_language(),
         beam_size=2,
         best_of=2,
         condition_on_previous_text=False,
@@ -84,6 +86,28 @@ def transcribe_options():
         # only re-scan audio that is speech by construction.
         vad_filter=False,
     )
+
+
+def resolve_language():
+    """The language handed to the decoder: a code, or None to detect it.
+
+    A code Whisper does not know would only surface at the first dictation,
+    as a ValueError swallowed into a failed transcription; a typo in the
+    config file must not cost a dictation. Checked here, on every call, so
+    that the fallback and the daemon agree and the warning is in the log.
+    """
+    if LANGUAGE == "auto":
+        return None
+    from faster_whisper.tokenizer import _LANGUAGE_CODES
+
+    if LANGUAGE in _LANGUAGE_CODES:
+        return LANGUAGE
+    print(
+        f"Unknown language '{LANGUAGE}' (expected a Whisper code such as fr, en, de, "
+        "or auto) — detecting it instead.",
+        file=sys.stderr, flush=True,
+    )
+    return None
 
 
 def split_on_silence(audio):
@@ -187,19 +211,33 @@ def transcribe_file(model, wav_path):
     **nothing** and restore the missing qualifier. A ragged seam is cosmetic; a
     dictation missing a phrase the speaker said is not. Hence this, and not
     that.
+
+    Language: with LANGUAGE == "auto", faster-whisper detects it from the first
+    piece — that costs nothing, the encoder pass is shared with the decoding —
+    and the pieces that follow are pinned to it. Left undetected, each piece
+    would be guessed on its own, and a short piece of a French dictation can
+    come back as Italian, or as English with the words "translated". One
+    language per dictation, then; a new dictation detects afresh.
     """
     from faster_whisper.audio import decode_audio
 
     audio = decode_audio(wav_path, sampling_rate=SAMPLE_RATE)
     hotwords = load_vocabulary()
+    options = transcribe_options()
 
     parts = []
     for chunk in split_on_silence(audio):
         context = " ".join(" ".join(parts).split()[-CONTEXT_WORDS:]) if parts else None
-        segments, _info = model.transcribe(
-            chunk, hotwords=hotwords, initial_prompt=context, **transcribe_options()
+        segments, info = model.transcribe(
+            chunk, hotwords=hotwords, initial_prompt=context, **options
         )
         text = " ".join(seg.text.strip() for seg in segments)
+        if options["language"] is None:
+            options["language"] = info.language
+            print(
+                f"Language detected: {info.language} ({info.language_probability:.2f})",
+                flush=True,
+            )
         if text:
             parts.append(text)
     return " ".join(parts)
@@ -324,6 +362,7 @@ def start_daemon():
         model = WhisperModel(MODEL_ID, device=device, compute_type=compute)
 
     print(f"Model loaded on {device} ({compute}) in {time.time()-t0:.1f}s", flush=True)
+    print(f"Language: {resolve_language() or 'detected per dictation'}", flush=True)
 
     with open(PID_FILE, "w") as f:
         f.write(str(os.getpid()))

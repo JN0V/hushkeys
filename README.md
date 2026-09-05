@@ -1,6 +1,6 @@
 <p align="center"><img src="assets/logo.svg" width="128" alt="hushkeys"></p>
 
-# hushkeys — offline French dictation
+# hushkeys — offline dictation
 
 Dictate into **any field** on the desktop, without a single sound leaving the
 machine. Microphone recording, transcription by [faster-whisper][fw] on an
@@ -9,17 +9,6 @@ clipboard, not by simulated typing
 ([why](#the-text-is-pasted-not-typed)).
 
 [fw]: https://github.com/SYSTRAN/faster-whisper
-
-```
-hushkeys toggle     # starts, then stops and pastes the text
-```
-
-A daemon keeps the model resident in VRAM: a 20 s dictation is transcribed in
-6 s, with no reload.
-
-The recogniser is pinned to French (`language="fr"` in `bin/hushkeys-daemon.py`)
-and the shipped vocabulary is French-flavoured, but nothing else in the design is
-language-specific — one constant changes that.
 
 ---
 
@@ -33,8 +22,10 @@ sudo usermod -aG input $USER     # access to /dev/uinput — reboot required
 ```
 
 `install.sh` builds the venv, creates the symlinks and enables the services; it
-writes nothing outside `~/bin`, `~/.config` and `~/.local/share`. It leaves three
-things to do by hand, and reminds you of them on the way out:
+writes nothing outside `~/bin`, `~/.config` and `~/.local/share`. It asks one
+question, the dictation language — a Whisper code such as `fr`, `en`, `de`, or
+`auto` — and answers it from `HUSHKEYS_LANGUAGE` when there is no terminal. It
+leaves three things to do by hand, and reminds you of them on the way out:
 
 - **Reboot**, for the `input` group — logging back in is not enough
   ([why](#ydotool-not-xdotool)). The reboot also settles `PATH`: Ubuntu only adds
@@ -52,8 +43,9 @@ To dictate into a terminal, add a second shortcut — terminals paste with
 env HUSHKEYS_PASTE_KEYS=ctrl+shift+v /home/<user>/bin/hushkeys toggle
 ```
 
-Personal configuration lives in `~/.config/hushkeys/vocabulary.txt`, outside the
-repository.
+Personal configuration lives in `~/.config/hushkeys/`, outside the repository:
+`config` holds the language and, optionally, the model; `vocabulary.txt` the
+terms the decoder should know.
 
 The dictation state shows as an icon in the top bar
 ([why](#the-state-lives-in-the-top-bar-not-in-a-banner)); it needs `python3-gi`,
@@ -177,7 +169,8 @@ real French speech, VAD on:
 
 `medium` in int8 fits in **970 MiB**, less than half of the 2 GB.
 `large-v3` weighs about 1.6 GB and would leave no headroom: it stays reserved for
-better-equipped machines, through `HUSHKEYS_MODEL=large-v3`.
+better-equipped machines, through `model=large-v3` in `~/.config/hushkeys/config`
+(or `HUSHKEYS_MODEL=large-v3` in the environment, which wins over the file).
 
 The 12.7 → 18.1 s spread between two identical CPU runs is thermal throttling on
 the 15 W part. Any CPU measurement on this chassis should be read as a range,
@@ -417,6 +410,27 @@ immediately, without restarting the daemon or reloading the model.
 is what the [chunking](#the-vocabulary-reopened-the-same-door) exists to pay
 for.
 
+### One language per dictation, chosen per machine
+
+Nothing in the pipeline is tied to a language: Whisper is multilingual, the
+vocabulary is a list of terms, and the text is pasted as is. The language is
+therefore a setting, not a constant — `language=` in `~/.config/hushkeys/config`,
+asked once by `install.sh` — and it is per machine because it is per person.
+
+A fixed code (`fr`, `en`, …) is the safe choice: the decoder never has to guess,
+and a two-second recording cannot come back in the wrong language. `auto` is for
+people who switch. It asks faster-whisper to detect the language on the **first
+piece** of the dictation, which is free — detection runs on the encoder output
+the decoding needs anyway — and then pins every later piece to what was found.
+Detecting each piece on its own would be cheaper to write and wrong in practice:
+a short piece of French can be read as Italian, or as English with the words
+translated, and one such piece in the middle of a dictation is worse than a
+whole dictation in the wrong language. So it is one language per dictation, any
+language across dictations; the daemon logs what it detected.
+
+`HUSHKEYS_LANGUAGE` in the environment overrides the file, for one shortcut
+bound to another language.
+
 ### Why not Speed of Sound
 
 The Flathub application `io.speedofsound.SpeedOfSound` covers the same need and
@@ -452,7 +466,7 @@ bin/hushkeys-daemon       daemon wrapper for systemd
 bin/hushkeys-daemon.py    resident-model daemon (Unix socket)
 bin/transcribe.py         fallback without the daemon
 systemd/                  user units and the post-suspend CUDA fix
-config/                   vocabulary template (never the real configuration)
+config/                   templates: config (language, model) and vocabulary
 assets/                   logo (colour, and single-ink for favicons)
 ```
 
