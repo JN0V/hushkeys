@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo.svg" width="128" alt="hushkeys"></p>
+
 # hushkeys — offline French dictation
 
 Dictate into **any field** on the desktop, without a single sound leaving the
@@ -451,6 +453,7 @@ bin/hushkeys-daemon.py    resident-model daemon (Unix socket)
 bin/transcribe.py         fallback without the daemon
 systemd/                  user units and the post-suspend CUDA fix
 config/                   vocabulary template (never the real configuration)
+assets/                   logo (colour, and single-ink for favicons)
 ```
 
 ## Running it
