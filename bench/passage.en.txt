@@ -1,0 +1,5 @@
+This morning we migrated the staging Kubernetes cluster to the new zone, with
+Terraform for the infrastructure and ArgoCD for the deployment. The pull request
+touches twelve files, including the git worktree used by the CI/CD pipeline. We
+still need to validate the secret rotation before merging, then warn the support
+team about Thursday evening's maintenance window.

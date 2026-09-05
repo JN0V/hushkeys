@@ -1,0 +1,5 @@
+Ce matin, on a migré le cluster Kubernetes de préproduction vers la nouvelle
+zone, avec Terraform pour l'infrastructure et ArgoCD pour le déploiement. La
+pull request touche douze fichiers, dont le git worktree de la CI/CD. Il reste
+à valider la rotation des secrets avant de merger, puis à prévenir l'équipe
+support pour la fenêtre de maintenance de jeudi soir.

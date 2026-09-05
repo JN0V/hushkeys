@@ -548,6 +548,9 @@ bin/hushkeys-indicator    top-bar icon showing the dictation state
 bin/hushkeys-daemon       daemon wrapper for systemd
 bin/hushkeys-daemon.py    resident-model daemon (Unix socket)
 bin/transcribe.py         fallback without the daemon
+bin/hushkeys-bench.py     `hushkeys bench` / `hushkeys reports` — see below
+bench/                    passages to read aloud for the bench, one per language
+reports/                  one report per machine measured, and their index
 systemd/                  user units and the post-suspend CUDA fix
 config/                   templates: config (language, model) and vocabulary
 assets/                   logo (colour, and single-ink for favicons)
@@ -585,6 +588,48 @@ The repository can be cloned anywhere: the systemd unit points at
 update — there is no need to reinstall. The daemon holds its code in memory
 though, so a pull that touches it takes effect on
 `systemctl --user restart hushkeys-daemon`.
+
+## Validating on another machine
+
+Every number in this README comes from one laptop: an MX230 with 2 GB, GNOME
+50 under Wayland. Another Ubuntu, X11 instead of Wayland, a bigger card, or no
+card at all, each changes something, and the way to know what is to measure it
+there and keep the result next to the others.
+
+```bash
+hushkeys bench                         # reads bench/passage.<language>.txt aloud
+hushkeys bench --models small,medium   # skip large-v3 (a 3 GB download)
+hushkeys bench --device cpu            # the no-GPU path, on a machine that has one
+hushkeys bench --wav some-recording.wav
+```
+
+The bench stops the daemon for the duration (it holds the VRAM), then runs
+each model in its own process — an out-of-memory leaves a CUDA context that
+cannot be reused, so one failure must not colour the next run — through the
+daemon's own `transcribe_file`: same chunking, same decoding options, same
+vocabulary, so the timings are those of a real dictation. For each model it
+records load time, transcription time, real-time factor, the peak of the whole
+card's VRAM, and the share of words agreeing with the passage. It ends with a
+recommendation for `model=` in `~/.config/hushkeys/config`: on a GPU, the
+largest model whose peak stays under 80 % of the card, the rest being the
+headroom a dictation longer than the passage needs; without one, the largest
+that keeps up with speech.
+
+It writes `reports/<host>-<date>.json` and `.md`. The `.md` carries a checklist
+for what a bench cannot measure — pasting into a GTK field, a terminal and a
+browser, the top-bar indicator, dictation after a suspend, a dictation over two
+minutes — to be ticked by hand, with a word on how anything failed. Then
+`hushkeys reports` rebuilds `reports/README.md`, the table across all machines,
+and both go into a commit. The recording itself stays out of the repository,
+under `~/.local/share/hushkeys/bench/`.
+
+Two things a report will show that are worth knowing beforehand. Forcing the
+wrong language is expensive, not merely wrong: the English clip used to check
+the bench took 48 s under `language=fr` and 17 s under `en`, with the VRAM
+peak at the very top of the card, because every window fails the quality
+thresholds and gets decoded again. And `HUSHKEYS_DEVICE=cpu` is honoured by the
+daemon too, so a machine with a card can run the CPU path for comparison
+without touching its config.
 
 ## Coming from `dictation`
 

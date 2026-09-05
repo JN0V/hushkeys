@@ -229,6 +229,8 @@ case "${1:-start}" in
     daemon-stop)   "$VENV/bin/python" "$DAEMON_PY" --stop ;;
     daemon-status) "$VENV/bin/python" "$DAEMON_PY" --status ;;
 
+    bench|reports) exec "$VENV/bin/python" "$SCRIPT_DIR/hushkeys-bench.py" "$@" ;;
+
     *)
         cat <<EOF
 Usage: hushkeys <command>
@@ -241,6 +243,10 @@ Usage: hushkeys <command>
   daemon-stop     stop the daemon
   daemon-status   report whether the daemon is running
 
+  bench           measure this machine (models, timings, VRAM) into reports/
+  reports         rebuild reports/README.md from the reports
+
+Language   : $HUSHKEYS_LANGUAGE   (~/.config/hushkeys/config, or HUSHKEYS_LANGUAGE=en)
 Model      : $HUSHKEYS_MODEL   (override: HUSHKEYS_MODEL=small hushkeys ...)
 Vocabulary : $VOCAB_FILE
 Paste keys : $PASTE_KEYS   (HUSHKEYS_PASTE_KEYS=ctrl+shift+v for a terminal)

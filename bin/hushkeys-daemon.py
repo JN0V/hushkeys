@@ -287,7 +287,12 @@ def pick_compute_type():
     ctranslate2 refuses float16 outright; int8 works there through dp4a.
     We ask ctranslate2 rather than guess: the same checkout then runs on an
     MX230 (int8) and on an RTX 2070 (float16) with no change.
+
+    HUSHKEYS_DEVICE=cpu skips the GPU on purpose — that is how the bench
+    measures the no-GPU path on a machine that has one.
     """
+    if os.environ.get("HUSHKEYS_DEVICE", "").lower() == "cpu":
+        return "cpu", "int8"
     try:
         import ctranslate2
 
