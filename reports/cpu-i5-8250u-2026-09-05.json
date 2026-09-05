@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "label": "cpu-i5-8250u",
+  "date": "2026-09-05",
+  "hushkeys": "0511683",
+  "host": {
+    "os": "Ubuntu 22.04.5 LTS",
+    "kernel": "6.8.0-136-generic",
+    "desktop": "ubuntu:GNOME",
+    "session": "wayland",
+    "gnome_shell": "GNOME Shell 42.9",
+    "cpu": "Intel(R) Core(TM) i5-8250U CPU @ 1.60GHz",
+    "ram_gib": 7.5
+  },
+  "gpu": null,
+  "software": {
+    "python": "3.12.13",
+    "faster_whisper": "1.2.1",
+    "ctranslate2": "4.8.2",
+    "cuda_wheels": "False"
+  },
+  "config": {
+    "language": "fr",
+    "model": "medium",
+    "device_forced": null
+  },
+  "audio": {
+    "seconds": 25.5,
+    "passage": "fr"
+  },
+  "runs": [
+    {
+      "model": "small",
+      "device": "cpu",
+      "compute": "int8",
+      "status": "ok",
+      "error": null,
+      "vram_baseline_mib": null,
+      "load_s": 2.0,
+      "transcribe_s": 4.0,
+      "text": "Ce matin, on a migré le Cluster Kubernetes de pré-production vers la nouvelle zone avec Terraform pour l'infrastructure et ArgoCD pour le déploiement. La pull request touche 12 fichiers, dont le git worktree de la CI-CD. Il reste à valider la rotation des secrets avant de merger, puis à prévenir l'équipe support pour la fenêtre de maintenance de jeudi soir.",
+      "agreement": 0.961,
+      "rtf": 0.16
+    },
+    {
+      "model": "medium",
+      "device": "cpu",
+      "compute": "int8",
+      "status": "ok",
+      "error": null,
+      "vram_baseline_mib": null,
+      "load_s": 3.3,
+      "transcribe_s": 11.1,
+      "text": "Ce matin, on a migré le cluster Kubernetes de pré-production vers la nouvelle zone, avec Terraform pour l'infrastructure et ArgoCD pour le déploiement. La pull request touche 12 fichiers, dont le git worktree de la CI-CD. Il reste à valider la rotation des secrets avant de merger, puis à prévenir l'équipe support pour la fenêtre de maintenance de jeudi soir.",
+      "agreement": 0.961,
+      "rtf": 0.44
+    }
+  ],
+  "recommendation": {
+    "model": "medium",
+    "reason": "CPU only, 11.1 s for the passage (RTF 0.44)"
+  },
+  "note": "WAV enregistré séparément (parecord 16 kHz mono, silences rognés) : l'enregistrement interactif du bench demande un TTY. Modèles pré-téléchargés pour que load_s mesure le chargement, pas le téléchargement. Mesuré après le passage à CHUNK_SECONDS_CPU=30 ; avant ce changement, medium donnait 20.3 s et 17.6 s (RTF 0.80 et 0.69)."
+}
