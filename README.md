@@ -81,12 +81,13 @@ projects are built on. Hence a new one.
 ### What it does not do
 
 - Run anywhere but GNOME on Linux, or shine without an NVIDIA card — the CPU
-  fallback works, two to three times slower.
+  fallback works, about half again slower now that the pieces are sized for it.
 - Install without the `input` group, a reboot, and one `sudo` for the
   after-suspend fix.
 - Offer a window, a settings screen, voice commands, push-to-talk, or a model
   that cleans the text up.
-- Come with more than one author, or measurements from more than one machine.
+- Come with more than one author. Measurements now come from two machines, one
+  of them without a card ([reports/](reports/)).
 
 [handy]: https://github.com/cjpais/handy
 [ow]: https://github.com/OpenWhispr/openwhispr
@@ -104,6 +105,26 @@ sudo usermod -aG input $USER     # access to /dev/uinput — reboot required
 ./install.sh
 ```
 
+On **Ubuntu 22.04** that first line is not enough, and `install.sh` says so by
+stopping at step 1. Jammy's `ydotool` is 0.1.8, which ships the client alone —
+no `ydotoold`, no systemd unit, both of which arrived in 1.0. Build it, and add
+the udev rule that jammy does not ship either, without which `ydotoold` is
+refused `/dev/uinput` even once you are in the `input` group:
+
+```bash
+git clone --depth 1 --branch v1.0.4 https://github.com/ReimuNotMoe/ydotool
+cmake -B build -DCMAKE_INSTALL_PREFIX=/usr/local ydotool && cmake --build build
+sudo install -m755 build/ydotool build/ydotoold /usr/local/bin/
+sudo install -Dm644 build/ydotool.service /usr/local/lib/systemd/user/ydotool.service
+echo 'KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' \
+    | sudo tee /etc/udev/rules.d/60-uinput.rules
+sudo udevadm control --reload && sudo udevadm trigger
+```
+
+Without the rule the daemon transcribes and nothing is ever pasted — the one
+failure the design goes out of its way to make visible, since `type_text`
+leaves the text in the clipboard and says why.
+
 `install.sh` builds the venv, creates the symlinks and enables the services; it
 writes nothing outside `~/bin`, `~/.config` and `~/.local/share`. It asks one
 question, the dictation language — a Whisper code such as `fr`, `en`, `de`, or
@@ -114,7 +135,11 @@ leaves three things to do by hand, and reminds you of them on the way out:
   ([why](#ydotool-not-xdotool)). The reboot also settles `PATH`: Ubuntu only adds
   `~/bin` if it exists when the session opens.
 - A GNOME **keyboard shortcut** (*Settings > Keyboard > Custom Shortcuts*) on
-  `~/bin/hushkeys toggle`.
+  `~/bin/hushkeys toggle`. It can be set from `gsettings` instead, with one
+  catch: fill `name`, `command` and `binding` **first**, then write the
+  `custom-keybindings` list. Appending the path before the keys are set leaves
+  gnome-settings-daemon holding an empty entry — Settings displays the shortcut
+  correctly and it never fires.
 - On a laptop, the **CUDA-after-suspend fix** — a symlink in
   `/etc/systemd/system`, the only step that needs `sudo`
   ([why](#running-it)).
@@ -136,7 +161,10 @@ which Ubuntu ships, and under GNOME the AppIndicator extension, enabled by
 default on Ubuntu. Without them the state falls back to notifications.
 
 Without an NVIDIA GPU everything still works: the daemon falls back to CPU
-`int8`, two to three times slower (see the table below).
+`int8` and cuts the recording into longer pieces, which is most of what the
+card was buying ([why](#the-piece-is-sized-for-the-device)). On an i5-8250U
+with no card, `medium` transcribes 25.5 s of French in 11.1 s — see
+[reports/](reports/).
 
 ---
 
@@ -368,6 +396,30 @@ property that was wanted all along finally holds against real speech:
 
 The time cost is nil: 55.5 s at 20 against 53.8 s at 24, on the same 164 s.
 
+### The piece is sized for the device
+
+Everything above is a VRAM argument, and it does not survive the machine having
+no VRAM. The encoder runs over a 30-second window whatever the piece holds, so
+a 20 s piece pays for a full pass and fills two thirds of it — on the card that
+is the price of not falling off the cliff, and on the CPU it buys nothing at
+all. On an i5-8250U with no card, `medium` in int8, over 156.6 s of French:
+
+| `CHUNK_SECONDS` | Pieces | Transcription | Peak RSS |
+|---|---|---|---|
+| 20 | 12 | 114.6 s, 124.3 s | 2173 MiB |
+| **30** | **6** | **67.6 s, 71.1 s** | 2173 MiB |
+
+Same 360 words out, same peak, 42 % less time — twelve windows encoded against
+six, for the same speech. So the length is chosen per device: 20 s on the card,
+one window on the CPU, read off the loaded model rather than off
+`pick_compute_type()`, since the daemon falls back to the CPU when the GPU load
+fails and the pieces have to follow the model that exists.
+
+Whether a piece spanning several windows would do better is untested. The
+sample above repeats one passage six times, so a single 120 s piece holding all
+six fails the compression-ratio threshold and decodes twice over — 156.7 s,
+worse than either row. That measures the repetition, not the length.
+
 ### The fallback nobody looks at
 
 Chunk size alone never explained the failures. 4 vocabulary terms failed where
@@ -591,10 +643,12 @@ though, so a pull that touches it takes effect on
 
 ## Validating on another machine
 
-Every number in this README comes from one laptop: an MX230 with 2 GB, GNOME
-50 under Wayland. Another Ubuntu, X11 instead of Wayland, a bigger card, or no
-card at all, each changes something, and the way to know what is to measure it
-there and keep the result next to the others.
+Most numbers in this README come from one laptop: an MX230 with 2 GB, GNOME 50
+under Wayland. The second report is an i5-8250U with no card at all, on Ubuntu
+22.04 — it is what showed that the piece length had to depend on the device,
+and what the 22.04 prerequisites above were found on. Another Ubuntu, X11
+instead of Wayland, or a bigger card each changes something, and the way to
+know what is to measure it there and keep the result next to the others.
 
 ```bash
 hushkeys bench                         # reads bench/passage.<language>.txt aloud
