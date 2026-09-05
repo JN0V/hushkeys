@@ -10,6 +10,89 @@ clipboard, not by simulated typing
 
 [fw]: https://github.com/SYSTRAN/faster-whisper
 
+Built for one situation the polished tools handle badly: GNOME under Wayland, a
+laptop with a small NVIDIA card, and technical vocabulary
+([why another one](#why-another-one)).
+
+```
+hushkeys toggle     # starts, then stops and pastes the text
+```
+
+A daemon keeps the model resident in VRAM: a 20 s dictation is transcribed in
+6 s, with no reload.
+
+Any language Whisper knows — about a hundred — is dictated the same way. The
+language is chosen at install time and kept in `~/.config/hushkeys/config`;
+`auto`, the default, detects it on each dictation
+([how](#one-language-per-dictation-chosen-per-machine)). The measurements
+quoted below were all taken on French speech, the author's.
+
+---
+
+## Why another one
+
+There are a dozen offline dictation tools for Linux in 2026, and the largest —
+[Handy][handy], [OpenWhispr][ow], [Speech Note][sn] — are polished, free, and
+run on three desktops. hushkeys exists because two earlier ones were tried
+first and neither fit, and because what did not fit is not the kind of thing a
+bigger project grows out of.
+
+### Where it comes from
+
+[nerd-dictation][nd] gave the shape: two commands behind a keyboard shortcut,
+no window, the text lands wherever the cursor is. Its architecture is the
+opposite of this one on the two points that matter here — it recognises with
+VOSK, in a stream, where Whisper is in another league on technical speech, and
+it inserts the text by simulated typing, which is precisely what GNOME under
+Wayland does not serve ([why](#ydotool-not-xdotool)).
+
+[Speed of Sound][sos] was the Flathub answer, and it was tested seriously
+enough to find its three limits: no GPU, ever; a recogniser three times slower
+at equal model size; a vocabulary that only reaches the correction stage, never
+the recognition ([details](#why-not-speed-of-sound)).
+
+Neither problem is a missing feature. They are choices, made early, that the
+projects are built on. Hence a new one.
+
+### What it does differently
+
+- **GNOME Wayland works, by construction.** The 2026 guides agree that no
+  dictation tool is fully reliable under Wayland, and that the usual answer is
+  ydotool or wtype "with caveats". Here the caveats were the starting point: the
+  text goes through the clipboard and one forged key event, and the README says
+  why nothing else can work on Mutter ([why](#the-text-is-pasted-not-typed)).
+- **A 2 GB GPU is enough, and the numbers are in the README.** The mainstream
+  runs whisper.cpp on the CPU or assumes a real card. Here `medium` sits
+  resident in 970 MiB, a 20 s dictation takes 6 s, and the decoding is tuned so
+  that an hour of speech peaks where two minutes do
+  ([why](#decoding-is-tuned-for-vram-not-for-the-last-percent-of-accuracy)).
+- **The vocabulary acts on recognition, not after it.** Most tools fix the text
+  once it is out, with a replacement list or a language model. Here the terms
+  bias the decoder itself, and the file is re-read at every dictation
+  ([why](#technical-vocabulary-goes-through-hotwords)).
+- **Nothing sits between the voice and the text.** No cleanup model, no account,
+  no cloud option, no application framework: about a thousand lines of bash and
+  Python, installed as symlinks, updated by `git pull`, readable in an evening.
+  What is pasted is what was said.
+- **A failure is never silence.** A failed transcription is reported as such,
+  the recording is kept, and a lost CUDA context restarts the daemon
+  ([why](#a-failure-is-never-reported-as-silence)).
+
+### What it does not do
+
+- Run anywhere but GNOME on Linux, or shine without an NVIDIA card — the CPU
+  fallback works, two to three times slower.
+- Install without the `input` group, a reboot, and one `sudo` for the
+  after-suspend fix.
+- Offer a window, a settings screen, voice commands, push-to-talk, or a model
+  that cleans the text up.
+- Come with more than one author, or measurements from more than one machine.
+
+[handy]: https://github.com/cjpais/handy
+[ow]: https://github.com/OpenWhispr/openwhispr
+[sn]: https://github.com/mkiol/dsnote
+[sos]: https://flathub.org/apps/io.speedofsound.SpeedOfSound
+
 ---
 
 ## Installation
